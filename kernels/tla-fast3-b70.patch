@@ -1,0 +1,62 @@
+diff --git a/include/cute/arch/reorder_xe.hpp b/include/cute/arch/reorder_xe.hpp
+index f7c123da..4a11bba4 100644
+--- a/include/cute/arch/reorder_xe.hpp
++++ b/include/cute/arch/reorder_xe.hpp
+@@ -542,23 +542,19 @@ struct Xe_Reorder<ReorderKind::VV, float_e5m2_t, bfloat16_t>
+ };
+ 
+ 
++// B70: e4m3->half reorder yields value*2^-8 (consumers must rescale by 256).
++#define B70_E4M3_HALF_UNSCALED 1
+ // Common e4m3 -> half conversion sequence, after shl by 8.
+ #define CUTE_XE_REORDER_E4M3_HALF_SEQ \
+     ".decl OUT_W v_type=G type=W num_elts=64 alias=<%0,0>\n" \
+     ".decl OUT_UD v_type=G type=UD num_elts=32 alias=<%0,0>\n" \
+     ".decl OUT_HF v_type=G type=HF num_elts=64 alias=<%0,0>\n" \
+-    "asr (M1_NM, 32) OUT_W(0,0)<1> OUT_W(0,0)<1;1,0> 1:uw\n" \
+-    "asr (M1_NM, 32) OUT_W(1,0)<1> OUT_W(1,0)<1;1,0> 1:uw\n" \
+     "and (M1_NM, 32) OUT_UD(0,0)<1> OUT_UD(0,0)<1;1,0> 0xBFFFBFFF:ud\n" \
+     /* If no NaN inputs, the rest of the sequence can be replaced with: */ \
+     /*  "mul (M1_NM, 32) OUT_HF(0,0)<1> OUT_HF(0,0)<1;1,0> 0x5C00:hf\n" */ \
+     /*  "mul (M1_NM, 32) OUT_HF(1,0)<1> OUT_HF(1,0)<1;1,0> 0x5C00:hf\n" */ \
+-    "mul (M1_NM, 32) OUT_HF(0,0)<1> OUT_HF(0,0)<1;1,0> 0x7880:hf\n" \
+-    "mul (M1_NM, 32) OUT_HF(1,0)<1> OUT_HF(1,0)<1;1,0> 0x7880:hf\n" \
+-    "mul (M1_NM, 32) OUT_HF(0,0)<1> OUT_HF(0,0)<1;1,0> 0x1F1C:hf\n" \
+-    "mul (M1_NM, 32) OUT_HF(1,0)<1> OUT_HF(1,0)<1;1,0> 0x1F1C:hf\n" \
+-    "mad (M1_NM, 32) OUT_HF(0,0)<1> 0x0:hf OUT_HF(0,0)<1;1,0> OUT_HF(0,0)<1;1,0>\n" \
+-    "mad (M1_NM, 32) OUT_HF(1,0)<1> 0x0:hf OUT_HF(1,0)<1;1,0> OUT_HF(1,0)<1;1,0>\n"
++    /* B70: output is value * 2^-8; the x256 is folded into the FMHA */ \
++    /* softmax scale and V output scale (B70_E4M3_HALF_UNSCALED). */
+ 
+ template <>
+ struct Xe_Reorder<ReorderKind::UU, float_e4m3_t, half_t>
+@@ -584,10 +580,10 @@ struct Xe_Reorder<ReorderKind::UU, float_e4m3_t, half_t>
+ #else
+     asm (     /* 6 cycles/output register */
+       "{\n"
+-      ".decl IN_UB v_type=G type=UB num_elts=64 alias=<%1,0>\n"
+-      ".decl OUT_UW v_type=G type=UW num_elts=64 alias=<%0,0>\n"
+-      "shl (M1_NM, 32) OUT_UW(0,0)<1> IN_UB(0,0)<1;1,0> 8:uw\n"
+-      "shl (M1_NM, 32) OUT_UW(1,0)<1> IN_UB(0,32)<1;1,0> 8:uw\n"
++      ".decl IN_UB v_type=G type=B num_elts=64 alias=<%1,0>\n"
++      ".decl OUT_UW v_type=G type=W num_elts=64 alias=<%0,0>\n"
++      "shl (M1_NM, 32) OUT_UW(0,0)<1> IN_UB(0,0)<1;1,0> 7:w\n"
++      "shl (M1_NM, 32) OUT_UW(1,0)<1> IN_UB(0,32)<1;1,0> 7:w\n"
+       CUTE_XE_REORDER_E4M3_HALF_SEQ
+       "}\n"
+       : "=rw"(dst0)
+@@ -624,10 +620,10 @@ struct Xe_Reorder<ReorderKind::VV, float_e4m3_t, half_t>
+ #else
+     asm (     /* 6 cycles/output register */
+       "{\n"
+-      ".decl IN_UB v_type=G type=UB num_elts=64 alias=<%1,0>\n"
+-      ".decl OUT_UW v_type=G type=UW num_elts=64 alias=<%0,0>\n"
+-      "shl (M1_NM, 32) OUT_UW(0,0)<1> IN_UB(0,0)<4;2,1> 8:uw\n"
+-      "shl (M1_NM, 32) OUT_UW(1,0)<1> IN_UB(0,2)<4;2,1> 8:uw\n"
++      ".decl IN_UB v_type=G type=B num_elts=64 alias=<%1,0>\n"
++      ".decl OUT_UW v_type=G type=W num_elts=64 alias=<%0,0>\n"
++      "shl (M1_NM, 32) OUT_UW(0,0)<1> IN_UB(0,0)<4;2,1> 7:w\n"
++      "shl (M1_NM, 32) OUT_UW(1,0)<1> IN_UB(0,2)<4;2,1> 7:w\n"
+       CUTE_XE_REORDER_E4M3_HALF_SEQ
+       "}\n"
+       : "=rw"(dst0)

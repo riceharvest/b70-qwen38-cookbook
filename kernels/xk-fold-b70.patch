@@ -1,0 +1,200 @@
+diff --git a/csrc/xpu/attn/xe_2/collective/chunk_prefill_epilogue.hpp b/csrc/xpu/attn/xe_2/collective/chunk_prefill_epilogue.hpp
+index 210e301..f5c10c7 100644
+--- a/csrc/xpu/attn/xe_2/collective/chunk_prefill_epilogue.hpp
++++ b/csrc/xpu/attn/xe_2/collective/chunk_prefill_epilogue.hpp
+@@ -555,6 +555,17 @@ class DecodeFwdEpilogue {
+     auto thr_copy_o = copy_o.get_slice(thr_id);
+     auto tOgO = thr_copy_o.partition_D(gO);  // fragment coords (q,v)
+ 
++    // B70: with several subgroups along Q (spec-verify q32 tile) the stats for
++    // row r do not live in work-item r; lane l of each SG holds its row base+l
++    // (same mapping as the Sink block below).
++    if constexpr (cute::size<0>(SGTileShapeO{}) < q_tile_rows) {
++      int lane_q = static_cast<int>(
++          sycl::ext::oneapi::this_work_item::get_sub_group().get_local_id()[0]);
++      q_row = cute::get<0>(tOgO(cute::_0{}, cute::_0{}, cute::_0{})) + lane_q;
++      row_valid = active && lane_q < cute::size<0>(SGTileShapeO{}) &&
++                  q_row < head_group_q;
++    }
++
+     if constexpr (Sink) {
+       constexpr double kLog2e = 1.4426950408889634074;
+       if (row_valid && idx_kv_split == 0) {
+diff --git a/csrc/xpu/attn/xe_2/collective/chunk_prefill_mainloop.hpp b/csrc/xpu/attn/xe_2/collective/chunk_prefill_mainloop.hpp
+index 1f4557b..fe73ddc 100644
+--- a/csrc/xpu/attn/xe_2/collective/chunk_prefill_mainloop.hpp
++++ b/csrc/xpu/attn/xe_2/collective/chunk_prefill_mainloop.hpp
+@@ -496,6 +496,13 @@ struct FMHAFwdMainloop<
+       const float scale_k = *static_cast<const float*>(params.scale_k);
+       scale_v = *static_cast<const float*>(params.scale_v);
+       effective_scale = params.scale * ElementS(scale_k);
++#ifdef B70_E4M3_HALF_UNSCALED
++      if constexpr (std::is_same_v<ElementK, float_e4m3_t> &&
++                    std::is_same_v<ElementQ, half_t>) {
++        effective_scale *= ElementS(256.f);
++        scale_v *= 256.f;
++      }
++#endif
+     }
+ 
+     [[maybe_unused]] auto route_current = [&](int cur) -> int {
+@@ -873,6 +880,9 @@ struct DecodeFwdMainloop<
+     int window_size_right;
+     // Physical stride between paged blocks in seq-position units
+     int page_stride_elements;
++    // B70 speculative-verify packing
++    int spec_qlen;
++    int spec_group;
+   };
+ 
+   // Kernel-facing parameters
+@@ -903,7 +913,9 @@ struct DecodeFwdMainloop<
+         args.total_seqlen_kv,
+         args.window_size_left,
+         args.window_size_right,
+-        args.page_stride_elements};
++        args.page_stride_elements,
++        args.spec_qlen,
++        args.spec_group};
+   }
+ 
+   CUTLASS_HOST_DEVICE static bool can_implement(Arguments const&) {
+@@ -1200,6 +1212,13 @@ struct DecodeFwdMainloop<
+       const float scale_k = *static_cast<const float*>(params.scale_k);
+       scale_v = *static_cast<const float*>(params.scale_v);
+       effective_scale = params.scale * ElementS(scale_k);
++#ifdef B70_E4M3_HALF_UNSCALED
++      if constexpr (std::is_same_v<ElementK, float_e4m3_t> &&
++                    std::is_same_v<ElementQ, half_t>) {
++        effective_scale *= ElementS(256.f);
++        scale_v *= 256.f;
++      }
++#endif
+     }
+ 
+     /* Main loop, blocked in k. */
+@@ -1269,6 +1288,26 @@ struct DecodeFwdMainloop<
+         }
+       }
+ 
++      /* B70: per-row causal limit for packed speculative-verify rows.
++         Row r (draft position j = r / spec_group) may see keys < seq_len - (spec_qlen-1) + j. */
++      if (params.spec_qlen > 1) {
++        const int tail0 = seq_len - (params.spec_qlen - 1);
++        if ((K + 1) * int(get<1>(TileShapeQK{})) > tail0) {
++          Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
++          Tensor gP = local_tile(
++              cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
++          auto cS_thread = thr_mma_qk.partition_C(gP);
++          CUTLASS_PRAGMA_UNROLL
++          for (int i = 0; i < tSrS.size(); ++i) {
++            int row_idx = get<0>(cS_thread(i));
++            int col_idx = get<1>(cS_thread(i));
++            if (col_idx >= tail0 + row_idx / params.spec_group) {
++              tSrS(i) = ElementS(-INFINITY);
++            }
++          }
++        }
++      }
++
+       /* k masking for remainder tiles */
+       if (check_remainder_k && K == blk_k1 - 1) {
+         FragSCol k_rem_mask;
+diff --git a/csrc/xpu/attn/xe_2/paged_decode.hpp b/csrc/xpu/attn/xe_2/paged_decode.hpp
+index e5d9ad1..6c61145 100644
+--- a/csrc/xpu/attn/xe_2/paged_decode.hpp
++++ b/csrc/xpu/attn/xe_2/paged_decode.hpp
+@@ -158,6 +158,9 @@ struct paged_decode_args_t {
+   int64_t q_stride_heads = 0;
+   int64_t q_stride_batch = 0;
+   int page_stride_elements = 0;
++  // B70: speculative-verify packing (q rows = spec_qlen positions x spec_group heads)
++  int spec_qlen = 1;
++  int spec_group = 1;
+   // softmax_lse output [num_heads_q, total_seqlen_q] (nullptr if disabled).
+   // Written by the FMHA kernel epilogue when num_kv_splits <= 1 (no reduce
+   // pass), otherwise by the ReduceSplitK kernel.
+@@ -351,7 +354,9 @@ struct DecodeKernelLauncher {
+          args.window_size_right,
+          // page_stride_elements: physical stride between paged blocks in
+          // seq-position units. It includes interleaved and cross-layer gaps.
+-         args.page_stride_elements},
++         args.page_stride_elements,
++         args.spec_qlen,
++         args.spec_group},
+         {},
+         hw_info,
+         args.num_kv_splits};
+diff --git a/csrc/xpu/attn/xe_2/paged_decode_xe2.cpp b/csrc/xpu/attn/xe_2/paged_decode_xe2.cpp
+index b44f4f8..4f8e6bd 100644
+--- a/csrc/xpu/attn/xe_2/paged_decode_xe2.cpp
++++ b/csrc/xpu/attn/xe_2/paged_decode_xe2.cpp
+@@ -1,3 +1,4 @@
++#include <cstdlib>
+ #include "paged_decode_xe2.h"
+ #include "paged_decode_utils.hpp"
+ // Use the generated extern header (only declares enabled policies)
+@@ -8,6 +9,24 @@
+ #endif
+ 
+ namespace vllm::xpu::xe2 {
++
++// B70: speculative-verify decode tile. 32 packed rows (spec positions x GQA heads)
++// spread over 4 subgroups along Q (8 rows each, full KV tile per SG), so one WG
++// streams each KV tile once for all rows. Same per-SG accumulator footprint as q8.
++template <typename head_dim>
++struct decode_policy_spec_q32 {
++  using HeadDim = head_dim;
++  using ShapeQK = Shape<_32, _64, _64>;
++  using ShapePV = Shape<_32, _32, _64>;
++  using ShapeOut = Shape<_32, head_dim>;
++  using SubgroupLayoutQK = Layout<Shape<_4, _1, _1>>;
++};
++template <typename H>
++struct is_decode_policy_enabled<decode_policy_spec_q32<H>> : std::true_type {};
++template <typename H, bool C, bool L, bool S>
++struct is_decode_policy_tuple_enabled<decode_policy_spec_q32<H>, C, L, S>
++    : std::true_type {};
++
+ using namespace cute;
+ 
+ void cutlass_paged_decode_xe2(
+@@ -226,6 +245,16 @@ void cutlass_paged_decode_impl(
+       is_varlen ? query.stride(1) : query.stride(1),
+       is_varlen ? int64_t{0} : query.stride(0),
+       page_stride_elements};
++  {
++    // B70: speculative-verify packed rows (set by the Python spec path per call).
++    const char* e = std::getenv("B70_SPEC_QLEN");
++    int sq = e ? std::atoi(e) : 1;
++    int grp = num_heads_q / num_heads_kv;
++    if (sq > 1 && grp % sq == 0) {
++      args.spec_qlen = sq;
++      args.spec_group = grp / sq;
++    }
++  }
+ 
+   // For non-contiguous paged KV (e.g., cross-layer KV cache), enlarge
+   // total_seqlen_k to cover the full physical extent for the 2D block
+@@ -313,7 +342,20 @@ void cutlass_paged_decode_impl(
+   // a packed-Q tile size rather than a hard cap on the GQA ratio. Ratios <= 8
+   // fit a single _8 tile; larger ratios (e.g. falcon-7b's 71 query heads / 1 KV
+   // head) are processed by ceil(ratio / qgroup) work-groups using the _16 tile.
+-  if (num_q_group_size <= 8) {
++  // B70: the _16 tile spills registers at head_size 256 (ShapeOut_V stays 256),
++  // so large GQA ratios at head_size > 128 use ceil(ratio/8) _8 work-groups instead.
++  // B70: 32-row verify tile is opt-in (B70_SPEC_Q32=1): faster in isolation, slower in serving (NOTES.md).
++  static const bool b70_q32 = [] { const char* e = std::getenv("B70_SPEC_Q32"); return e && e[0] == '1'; }();
++  if (b70_q32 && args.spec_qlen > 1 && head_case == 4 && block_size % 64 == 0 &&
++      cuQKType.q_type == CutlassDType::half && cuQKType.k_type == CutlassDType::float8_e4m3 &&
++      num_q_group_size <= 32 && !args.is_local && !args.is_sink) {
++    // Only one instantiation (fp16 Q, e4m3 KV; causality comes from the per-row spec mask): the full 6-dtype x 8-flag
++    // expansion OOMs the compiler (>20 GB for one TU).
++    using P = decode_policy_spec_q32<_256>;
++    PagedDecodeConfig<typename P::ShapeQK, typename P::ShapePV, typename P::ShapeOut,
++                      typename P::SubgroupLayoutQK, void, 1, false, false, false,
++                      half_t, float_e4m3_t, float_e4m3_t, half_t>::kernel_dispatch(queue, args);
++  } else if (num_q_group_size <= 8 || args.head_size > 128) {
+     dispatch_by_page_size<_8>(block_size, head_case, queue, cuQKType, args);
+   } else {
+     dispatch_by_page_size<_16>(block_size, head_case, queue, cuQKType, args);
