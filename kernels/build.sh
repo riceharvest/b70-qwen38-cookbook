@@ -21,5 +21,5 @@ cd /w/xk
   -DGDN_KERNELS_ENABLED=OFF -DMQA_LOGITS_KERNELS_ENABLED=OFF -DMHC_KERNELS_ENABLED=OFF -DXPU_SPECIFIC_KERNELS_ENABLED=OFF \
   -DXPUMEM_ALLOCATOR_ENABLED=OFF -DVLLM_XPU_ENABLE_ONEDNN=OFF -DFA2_KERNELS_ENABLED=ON \
   -DVLLM_CHUNK_PREFILL_CONFIG=b70_prod_prefill.conf -DVLLM_PAGED_DECODE_CONFIG=b70_prod_decode.conf -DVLLM_CUTLASS_SRC_DIR=/w/tla
-ninja -C /w/build -j $JOBS attn_kernels_xe_2"
+ninja -C /w/build -j $JOBS attn_kernels_xe_2; chown -R $(id -u):$(id -g) /w"
 cp "$W/build/libattn_kernels_xe_2.so" "$HERE/libattn_kernels_xe_2.b70.so"; echo "built $HERE/libattn_kernels_xe_2.b70.so"
