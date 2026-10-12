@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rebuild libattn_kernels_xe_2.b70.so (vllm-xpu-kernels release/0.1.15.4 + sycl-tla 87f68506 + the two B70 patches).
 # needs: docker, ~25 GB free RAM, Intel oneAPI DPC++ 2026.0 (icpx) unpacked at $ONEAPI.
-# usage: ONEAPI=/path/to/oneapi ./build.sh          -> ./libattn_kernels_xe_2.b70.so  (~10 min, single AOT target)
+# usage: ONEAPI=/path/to/oneapi ./build.sh          -> ./libattn_kernels_xe_2.b70.so  (~25 min, single AOT target)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); W=${WORK:-$HERE/work}; mkdir -p "$W"
 ONEAPI=${ONEAPI:?set ONEAPI to a oneAPI 2026.0 root containing compiler/2026.0}

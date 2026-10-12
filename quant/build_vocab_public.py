@@ -1,4 +1,4 @@
-# Draft-head vocab from public text only: technical prose + code + reasoning/agentic calibration text.
+# Draft-head vocab without serving traffic: technical prose + code + reasoning/agentic calibration text.
 # usage: build_vocab_public.py K OUT.json   (container: tokenizer at /model, corpora in /opt/b70)
 import json, collections, sys
 from transformers import AutoTokenizer

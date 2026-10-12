@@ -26,7 +26,7 @@ Upstream versions of the fp8 conversion (opt-in, default behaviour unchanged):
 
 ## Building
 
-`ONEAPI=/path/to/oneapi ./build.sh` takes about 10 min. It needs icpx 2026.0 and builds for BMG-G31 only
+`ONEAPI=/path/to/oneapi ./build.sh` takes ~25 min on a 32-thread desktop (tested; the output is bit-identical to the release `.so`). It needs icpx 2026.0 and builds for BMG-G31 only
 (`VLLM_XPU_XE2_AOT_DEVICES=bmg-g31-a0`). Most of the time goes into the serial GPU codegen at link time, so extra `-j`
 barely helps. Each icpx job can take ~8 GB of RAM, so keep `JOBS` at 2-4.
 

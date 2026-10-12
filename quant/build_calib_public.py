@@ -1,4 +1,4 @@
-# Calibration set without private traffic: 40 mixed reasoning/agentic + 44 code + 44 technical prose windows, T=2048.
+# Calibration set without serving traffic: 40 reasoning/agentic (own datasets) + 44 code + 44 technical prose windows, T=2048.
 # Code windows stay below byte 8M of corpus.txt and prose below 60M of general.txt (eval windows start there).
 import json, random, sys
 from transformers import AutoTokenizer
