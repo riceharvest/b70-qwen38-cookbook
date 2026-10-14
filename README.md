@@ -18,7 +18,7 @@ What you get on one card, on the pinned `vllm/vllm-openai-xpu:v0.31.0` image:
 Built on top of [SergiioB's B70 cookbook](https://github.com/SergiioB/intel-arc-pro-b70-inference-cookbook). Its MTP and
 prefix-cache patches are included here (MIT). For a different engine, his EXL3 route is the other good option on this card.
 
-Setup problems (driver, firmware, Resizable BAR, permissions, GPU hangs)? Run [b70-doctor](https://github.com/riceharvest/b70-doctor) first: `curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-doctor/main/b70-doctor.sh | bash` (read-only).
+New to the B70? [Awesome Arc Pro B70](https://github.com/riceharvest/awesome-b70) collects setup, engines and known driver bugs with workarounds. Setup problems (driver, firmware, Resizable BAR, permissions, GPU hangs)? Run [b70-doctor](https://github.com/riceharvest/b70-doctor) first: `curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-doctor/main/b70-doctor.sh | bash` (read-only).
 
 ## Quick start (prebuilt image)
 
