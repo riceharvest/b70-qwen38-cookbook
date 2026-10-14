@@ -4,6 +4,8 @@ I spent a couple of days squeezing Qwen3.8-27B onto a single Arc Pro B70 (32 GB)
 has everything needed to reproduce it: launcher, vLLM patches, attention kernel patches (+ a prebuilt `.so`), the
 quantizer, and the benchmark and quality scripts.
 
+Made by [@imdariotoo](https://x.com/imdariotoo). I post my B70 and local-model releases on X, so follow there for the next ones.
+
 What you get on one card, on the pinned `vllm/vllm-openai-xpu:v0.31.0` image:
 
 - **262K context with vision**, a KV pool of ~320K tokens (fp8 KV), and MTP speculative decoding (k=4)
