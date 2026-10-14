@@ -1,0 +1,5 @@
+*
+!patches
+!runtime
+!docker
+!kernels/libattn_kernels_xe_2.b70.so

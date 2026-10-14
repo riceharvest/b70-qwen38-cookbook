@@ -18,7 +18,32 @@ What you get on one card, on the pinned `vllm/vllm-openai-xpu:v0.31.0` image:
 Built on top of [SergiioB's B70 cookbook](https://github.com/SergiioB/intel-arc-pro-b70-inference-cookbook). Its MTP and
 prefix-cache patches are included here (MIT). For a different engine, his EXL3 route is the other good option on this card.
 
-## Quick start
+## Quick start (prebuilt image)
+
+One command, no build. The image is the pinned vLLM XPU v0.31.0 with this repo's patches and the B70 attention
+kernels already in it:
+
+```bash
+docker run -d --name b70 --device /dev/dri -v /dev/dri:/dev/dri:ro --shm-size 8g -p 8000:8000 \
+  -v ~/models:/models -e MODEL=darioooooo0o/Qwen3.8-27B-GPTQ-Int4-asym ghcr.io/riceharvest/b70-vllm:latest
+docker logs -f b70     # first start: model download, then ~5 min to load and capture graphs
+```
+
+OpenAI API on :8000, model name `qwen38`. Pick the model with `MODEL` (an HF repo id or a path inside the container):
+
+| `MODEL` | what you get |
+|---|---|
+| `darioooooo0o/Qwen3.8-27B-GPTQ-Int4-asym` (default) | Qwen3.8-27B, 262K context + vision, MTP, tool calls |
+| `darioooooo0o/Qwen3.8-27B-Uncensored-GPTQ-Int4-asym` | the uncensored finetune, same setup |
+| `darioooooo0o/JEV-27B-VL-GPTQ-Int4-asym` | JEV decision model: `/v1/decide` (System 1) + chat (System 2), 131K context |
+
+JEV repos are detected automatically (LoRA on, fp8 lm_head off). Env overrides: `PORT`, `SERVED_NAME`, `GPU_UTIL`,
+`MAX_MODEL_LEN`, `FAST=0` (eager, no MTP). Anything after the image name is passed to vLLM. Packed MTP verify is off
+(see below). Needs ~12 GB of free host RAM: embeddings and the vision tower live in host RAM via UVA.
+
+Rebuild it yourself with `docker/build.sh` (Dockerfile in `docker/`).
+
+## Quick start (from source)
 
 ```bash
 git clone https://github.com/riceharvest/b70-qwen38-cookbook && cd b70-qwen38-cookbook
@@ -28,8 +53,7 @@ gh release download v1 -p 'libattn_kernels_xe_2.b70.so' -D kernels   # or grab i
 MODEL_DIR=~/models/qwen38-b70 ./serve.sh                               # OpenAI API on :8000, model name "qwen38"
 ```
 
-Needs Docker with `/dev/dri`, one B70, and ~12 GB of free host RAM (embeddings and the vision tower live in host RAM
-via UVA). First start takes 2-3 min. `PORT`, `GPU_UTIL` (default 0.93) and `ZE_AFFINITY_MASK` are env overrides.
+First start takes 2-3 min. `PORT`, `GPU_UTIL` (default 0.93) and `ZE_AFFINITY_MASK` are env overrides.
 
 ## Numbers
 
@@ -70,6 +94,7 @@ noise. On 100 seeded questions of the same kind (`bench/arith_battery.py`), mine
 | Path | |
 |---|---|
 | `serve.sh` | the launcher (pinned image digest, all patches, flags) |
+| `docker/` | the prebuilt image: `Dockerfile`, entrypoint `b70-serve.sh` (picks chat or JEV setup from the model), `build.sh` |
 | `patches/b70/` | my vLLM patches: asym GPTQ on XPU, fp8 lm_head, packed MTP verify hook, embed UVA, pruned draft vocab ([details](patches/b70/README.md)) |
 | `patches/sergiiob/` | SergiioB's MTP / GDN / prefix-cache patches, unchanged ([source](patches/sergiiob/SOURCE.md)) |
 | `runtime/` | packed-verify dispatcher and the 64K draft vocab, mounted at `/opt/b70` |
