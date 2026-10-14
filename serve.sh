@@ -8,7 +8,8 @@ PORT=${PORT:-8000}; NAME=${NAME:-b70-qwen38}; GPU_UTIL=${GPU_UTIL:-0.93}
 IMG=vllm/vllm-openai-xpu:v0.31.0@sha256:95ac815038c4b3537b173798bfe3b89bdf525a52bd653cd14d4deb01f1062be7
 SO=/opt/venv/lib/python3.12/site-packages/vllm_xpu_kernels/libattn_kernels_xe_2.so
 SO_FILE=${SO_FILE:-$HERE/kernels/libattn_kernels_xe_2.b70.so}
-KMOUNT=(); SPEC_PACKED=${B70_SPEC_PACKED:-1}
+# B70_SPEC_PACKED=1 (packed MTP verify) corrupts some outputs ("!!!!") with ~8 long generations in flight, so it's off
+KMOUNT=(); SPEC_PACKED=${B70_SPEC_PACKED:-0}
 if [ -f "$SO_FILE" ]; then
   KMOUNT=(-v "$SO_FILE:$SO:ro")   # built for THIS image only (kernels/README.md)
 else

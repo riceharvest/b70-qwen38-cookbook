@@ -45,8 +45,12 @@ depends on the text, so the ms/step row (time per verify step) is the stable num
 | tok/s | 2042 | 1822 | 1609 | 1422 | 824 (needle found) |
 
 - Prefix cache: a 16K-token prompt takes 8.5 s cold and 1.5 s warm.
-- With 12 concurrent requests, 10-11 of 12 outputs are byte-identical to running them alone. The rest diverge at
-  near-ties (batched fp16 math isn't batch-invariant). No corruption.
+- **Packed MTP verify is now off by default (fixed 2026-10-14).** With about 8 long generations in flight it turned
+  some outputs into `!!!!` garbage (2 of 16 thinking-length answers, 0 of 32 with it off). It only saves about 3% for
+  a single request (code 84 vs 81 tok/s, prose 78 vs 76 on my quick bench), so it isn't worth it. The decode numbers
+  above were measured with it on; `B70_SPEC_PACKED=1` turns it back on for single-user setups.
+- Short requests: with 12 concurrent, 10-11 of 12 outputs are byte-identical to running them alone. The rest diverge
+  at near-ties (batched fp16 math isn't batch-invariant).
 
 **Quality**: KL divergence vs BF16 over the top-20 logits on held-out 2048-token windows. Lower is better.
 
