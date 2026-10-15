@@ -182,6 +182,10 @@ VRAM capped at <=25 GB (`--gpu-memory-utilization 0.82`). Compared with the best
 | generation tok/s (= 64 / median TPOT) | 1139.8 (TPOT 56 ms) | **1511.5** (TPOT 42.3 ms, p99 45.3) | +33% |
 | total tok/s (prompt + output, wall clock) | 1967.7 | **2768.9** | +41% |
 | requests actually running | 64 | 64 (engine log: Running 64, Waiting 0, KV cache 54%) | |
+| rerun: the command below, as written | | 1420 generation (TPOT 45.1 ms) / 2581 total, Running 64 | +25% / +31% |
+
+The rerun came ~1 h later on a warmer card (the whole box measured ~4% slower that afternoon in other tests too), so
+expect roughly 1420-1510 generation and 2580-2770 total.
 
 32 users: 1081.8 generation / 1986 total. What made the difference at c=64:
 
@@ -189,7 +193,8 @@ VRAM capped at <=25 GB (`--gpu-memory-utilization 0.82`). Compared with the best
   At 64 sequences the state is ~1/3 of the bytes moved per decode step; fp16 halves it and halves its memory, so all
   64 requests fit. Quality check on the decode path (8 x 1024-token greedy generations, each scored against fp32-state
   prefill): KL 0.0027 / 0.0034 / 0.0035 at positions 0-255 / 256-511 / 512+, versus 0.0049 / 0.0023 / 0.0041 for
-  the fp32 state itself (the numerical noise floor); top-1 agreement 98.6-99.5%, same as fp32.
+  the fp32 state itself (the numerical noise floor); top-1 agreement 98.6-99.5%, same as fp32. gsm8k (first 100):
+  98/100 with the fp16 state, 94/100 with fp32 (same server flags; the gap is within run noise for 100 questions).
 - **Prefix caching off.** With it on, vLLM keeps extra GDN state per block ("align" mode) and only 29 of 64 requests fit.
 - fp8 weight-only attention/GDN/shared expert + fp8 lm_head (the image default; KL 0.019 vs the checkpoint), with the
   bf16 copies freed (`B70_LINEAR_FP8_FREE=1`, safe without MTP).
