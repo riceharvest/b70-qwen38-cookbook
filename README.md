@@ -22,6 +22,8 @@ New to the B70? [Awesome Arc Pro B70](https://github.com/riceharvest/awesome-b70
 
 Want llama.cpp instead of vLLM? [b70-llama-builds](https://github.com/riceharvest/b70-llama-builds) has prebuilt llama.cpp for the B70: SYCL compiled ahead of time for the card with the oneAPI runtime bundled (no oneAPI install, no hour-long build), and Vulkan with the B70 fixes.
 
+Progress per release (v1 to v3, before/after tables): [RESULTS.md](RESULTS.md).
+
 ## Quick start (prebuilt image)
 
 One command, no build. The image is the pinned vLLM XPU v0.31.0 with this repo's patches and the B70 attention
