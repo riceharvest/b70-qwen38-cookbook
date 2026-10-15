@@ -23,3 +23,4 @@ for r in roots:
         s = s[:j] + inject + s[j:]
         p.write_text(s); n += 1; print("patched", p)
 print("embed-uva files:", n)
+if n == 0: sys.exit("embed-uva: qwen3_5.py / qwen3_5_mtp.py not found in any vLLM tree")
