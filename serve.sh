@@ -49,5 +49,5 @@ exec vllm serve /model --port $PORT --served-model-name qwen38 --distributed-exe
   --cpu-offload-gb 4 --cpu-offload-params embed_tokens visual \
   --enable-auto-tool-choice --tool-call-parser qwen3_xml --reasoning-parser qwen3 --generation-config auto $B70_GDN_ARGS'
 echo "starting $NAME on :$PORT (first start ~2-3 min; logs: docker logs -f $NAME)"
-for i in $(seq 1 200); do curl -sf localhost:$PORT/health >/dev/null 2>&1 && { echo "$NAME READY on :$PORT"; exit 0; }; sleep 3; done
+for _ in $(seq 1 200); do curl -sf localhost:$PORT/health >/dev/null 2>&1 && { echo "$NAME READY on :$PORT"; exit 0; }; sleep 3; done
 echo "not ready yet - docker logs $NAME" >&2; exit 1
