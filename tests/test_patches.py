@@ -1,8 +1,8 @@
 """CPU-only tests for the patch scripts in patches/: they apply cleanly, in the Dockerfile's order, to the vLLM sources of
 the pinned base image, a second run changes nothing, and every patched file still compiles.
 
-The sources come from tests/fetch_vllm_src.sh (default ~/.cache/b70-cookbook-tests/vllm-xpu-v0.31.0/site-packages, or
-$B70_VLLM_SRC). Without them only the static checks run. Run: python -m pytest tests -q
+The sources come from tests/fetch_vllm_src.sh (default ~/.cache/b70-cookbook-tests/<hash of the FROM line>/site-packages,
+or $B70_VLLM_SRC). Without them only the static checks run. Run: python -m pytest tests -q
 """
 import hashlib
 import os
@@ -17,8 +17,17 @@ import pytest
 REPO = pathlib.Path(__file__).resolve().parent.parent
 PATCHES = REPO / "patches"
 SITE = "/opt/venv/lib/python3.12/site-packages"
+
+
+def _base_image():
+    m = re.search(r"^FROM (\S+)", (REPO / "docker" / "Dockerfile").read_text(), re.M)
+    return m.group(1)
+
+
+# same key as tests/fetch_vllm_src.sh: a new FROM means new sources, never a stale cache
+_KEY = hashlib.sha256(_base_image().encode()).hexdigest()[:12]
 SRC = pathlib.Path(os.environ.get("B70_VLLM_SRC",
-                                  pathlib.Path.home() / ".cache/b70-cookbook-tests/vllm-xpu-v0.31.0/site-packages"))
+                                  pathlib.Path.home() / ".cache/b70-cookbook-tests" / _KEY / "site-packages"))
 HAVE_SRC = (SRC / "vllm" / "__init__.py").is_file() and (SRC / "vllm_xpu_kernels").is_dir()
 needs_src = pytest.mark.skipif(not HAVE_SRC, reason=f"no vLLM sources at {SRC} (run tests/fetch_vllm_src.sh)")
 

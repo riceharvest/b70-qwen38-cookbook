@@ -10,7 +10,7 @@ order, in a temp copy. It checks that:
   instead of shipping it unpatched (SergiioB's accept-sync patch warns by design and is skipped there)
 
 ```bash
-tests/fetch_vllm_src.sh          # once: copies the .py files of vllm + vllm_xpu_kernels out of the base image (~40 MB, no GPU)
+tests/fetch_vllm_src.sh          # once per base image: copies the .py files of vllm + vllm_xpu_kernels out of it (~40 MB, no GPU)
 python -m pytest tests -q        # ~10 s; without the sources only the static checks run
 ```
 
