@@ -135,6 +135,12 @@ Prefill ~9.3-10.3K tok/s. MTP acceptance 3.3-3.6 on code, ~2.6 on prose. 0/32 co
 thinking-length requests. For comparison on localmaxxing (single B70, one request): 248 tok/s (vLLM 0.26 + MTP4, same
 checkpoint), 205 (vLLM 0.21 + MTP4), and the best llama.cpp runs I found are ~132 (SYCL, fused kernels, no MTP).
 
+**Many users at once.** For batch serving add `--mamba-ssm-cache-dtype float16`: Qwen3.5/3.6/3.8 store their linear-attention
+state in fp32 by default (60 MiB per request on this model), which at 64 requests is about a third of what the GPU reads
+per step. With it, 64 concurrent users get 42.3 ms per token (generation 1511.5 tok/s, 2769 tok/s total with prompts) instead
+of 49.3 ms with only 61 of 64 running; decode quality stays at the fp32 noise floor
+([numbers, quality check, exact command](https://riceharvest.github.io/awesome-b70/results/vllm-64-users.html)).
+
 **Decode GEMV check.** It matches CUTLASS to 3e-4 relative error per call (stress test: 900 routings incl. outlier
 activations; 500 replays inside an XPU graph), and in serving an eager cross-check of every decode call found zero
 mismatches over 2,048 steps. Greedy decode GEMV-vs-CUTLASS: per-step KL p50 0.0001, p99 0.043, 14/1555 steps > 0.05
