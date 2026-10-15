@@ -17,7 +17,7 @@ New: int4 MoE decode GEMV (`kernels/moe-gemv/`), fp8 weight-only for the linears
 | + int4 MoE decode GEMV | 93.8 / 94.3 | 200.8 / 145.4 |
 | **v3: + fp8 attention / GDN / shared expert** | **118.9 / 119.6** | **243.7 / 164.4** |
 
-vs stock: **+57% without MTP, +97% / +45% with MTP**. 64 concurrent users (no MTP, `--mamba-ssm-cache-dtype float16`): 1511.5 tok/s generation, 2769 total
+vs stock: **+57% without MTP, +97% / +45% with MTP**. 64 concurrent users (no MTP, `--mamba-ssm-cache-dtype float16`): 1420-1510 tok/s generation, 2581-2769 total (two runs), gsm8k 98/100
 ([details](https://riceharvest.github.io/awesome-b70/results/vllm-64-users.html)). fp8 linears: KL vs bf16 weights 0.019, top-1 agreement 95.2%.
 0/32 corrupted outputs with 8 concurrent thinking-length requests. Qwen3.8-27B unchanged from v2.
 

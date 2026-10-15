@@ -137,8 +137,9 @@ checkpoint), 205 (vLLM 0.21 + MTP4), and the best llama.cpp runs I found are ~13
 
 **Many users at once.** For batch serving add `--mamba-ssm-cache-dtype float16`: Qwen3.5/3.6/3.8 store their linear-attention
 state in fp32 by default (60 MiB per request on this model), which at 64 requests is about a third of what the GPU reads
-per step. With it, 64 concurrent users get 42.3 ms per token (generation 1511.5 tok/s, 2769 tok/s total with prompts) instead
-of 49.3 ms with only 61 of 64 running; decode quality stays at the fp32 noise floor
+per step. With it, 64 concurrent users get 42-45 ms per token (generation 1420-1510 tok/s over two runs, 2581-2769 tok/s total
+with prompts) instead of 49.3 ms with only 61 of 64 running; decode quality stays at the fp32 noise floor and gsm8k is 98/100
+(fp32: 94/100)
 ([numbers, quality check, exact command](https://riceharvest.github.io/awesome-b70/results/vllm-64-users.html)).
 
 **Decode GEMV check.** It matches CUTLASS to 3e-4 relative error per call (stress test: 900 routings incl. outlier
