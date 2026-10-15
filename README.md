@@ -140,7 +140,9 @@ state in fp32 by default (60 MiB per request on this model), which at 64 request
 per step. With it, 64 concurrent users get 42-45 ms per token (generation 1420-1510 tok/s over two runs, 2581-2769 tok/s total
 with prompts) instead of 49.3 ms with only 61 of 64 running; decode quality stays at the fp32 noise floor and gsm8k is 98/100
 (fp32: 94/100)
-([numbers, quality check, exact command](https://riceharvest.github.io/awesome-b70/results/vllm-64-users.html)).
+([numbers, quality check, exact command](https://riceharvest.github.io/awesome-b70/results/vllm-64-users.html)). With
+`serve.sh`: `B70_GDN_STATE=fp16 ./serve.sh`; with the image: add `--mamba-ssm-cache-dtype float16` after the image name.
+Quality was checked without MTP; with MTP the per-draft state slots are fp16 too (not measured yet).
 
 **Decode GEMV check.** It matches CUTLASS to 3e-4 relative error per call (stress test: 900 routings incl. outlier
 activations; 500 replays inside an XPU graph), and in serving an eager cross-check of every decode call found zero
