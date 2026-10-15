@@ -118,8 +118,10 @@ lm_head in bf16. Two MoE-specific additions make the difference on a B70:
   Bigger calls (MTP verify, prefill) stay on CUTLASS.
 - **fp8 weight-only for the linears a checkpoint ships in bf16** (`patches/b70/patch_linear_fp8.py`): attention, GDN
   projections and the shared expert are read as fp8 e4m3 with per-row scales (same kernel as the fp8 lm_head). KL vs the
-  bf16 weights 0.019, top-1 agreement 95.2%. `B70_LINEAR_FP8=0` turns it off. It keeps the bf16 copy allocated (+1.8 GB):
-  freeing it makes MTP fault the GPU, and the gain is bandwidth, not memory.
+  bf16 weights 0.019, top-1 agreement 95.2%. `B70_LINEAR_FP8=0` turns it off. Since image b70.4 the bf16 copy is freed
+  (weights 19.13 instead of 21.75 GiB, same speed); on b70.2 freeing it faulted the GPU under MTP, on b70.3 that no longer
+  reproduces (probes, MTP4 under load with and without prefix caching, 10 min mixed-load stress). `B70_LINEAR_FP8_FREE=0`
+  keeps the copy if you ever see a fault.
 
 Single request, 16K context, `GPU_UTIL=0.82`, code / prose answers of 512 tokens, decode tok/s:
 
@@ -200,7 +202,7 @@ expect roughly 1420-1510 generation and 2580-2770 total.
   98/100 with the fp16 state, 94/100 with fp32 (same server flags; the gap is within run noise for 100 questions).
 - **Prefix caching off.** With it on, vLLM keeps extra GDN state per block ("align" mode) and only 29 of 64 requests fit.
 - fp8 weight-only attention/GDN/shared expert + fp8 lm_head (the image default; KL 0.019 vs the checkpoint), with the
-  bf16 copies freed (`B70_LINEAR_FP8_FREE=1`, safe without MTP).
+  bf16 copies freed (`B70_LINEAR_FP8_FREE=1`, the default since b70.4).
 
 Caveats: SergiioB's checkpoint (llmfan46's MTP-preserved GPTQ-Int4) also stores the linear-attention projections and the
 shared expert in int4, so it reads fewer bytes per step than palmfuture's (bf16 there, fp8 here); that favours his run.

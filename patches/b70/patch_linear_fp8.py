@@ -1,8 +1,8 @@
 """B70: weight-only fp8 (e4m3, per-output-row scale) for selected UNQUANTIZED linears, via torch.ops._xpu_C.fp8_gemm_w8a16
 (same kernel as the fp8 lm_head). For checkpoints that ship some linears in bf16 (e.g. GPTQ MoE quants that keep
 attention / linear-attention / shared expert unquantized). Gate: B70_LINEAR_FP8_RE = regex on the layer prefix.
-Prefixes containing 'mtp' are never converted. The bf16 weight stays allocated unless B70_LINEAR_FP8_FREE=1
-(the gain is bandwidth: decode reads the fp8 copy). Measured on Qwen3.6-35B-A3B (palmfuture GPTQ-Int4): KL vs bf16 0.019."""
+Prefixes containing 'mtp' are never converted. The bf16 copy is freed (default since image b70.4, -2.6 GiB on Qwen3.6-35B-A3B);
+B70_LINEAR_FP8_FREE=0 keeps it allocated (the gain is bandwidth either way: decode reads the fp8 copy). Measured on Qwen3.6-35B-A3B (palmfuture GPTQ-Int4): KL vs bf16 0.019."""
 import pathlib, sys
 MARK = "# B70_LINEAR_FP8"
 P = pathlib.Path("/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/linear.py")
@@ -43,9 +43,10 @@ def _b70_fp8_convert(layer) -> None:
     s = W.float().abs().amax(dim=1).clamp(min=1e-8) / 448.0
     Wq = (W.float() / s[:, None]).to(torch.float8_e4m3fn)
     layer._b70_fp8 = (Wq.t(), s.to(torch.float32))
-    if _b70_os.environ.get('B70_LINEAR_FP8_FREE') == '1':
-        # frees the bf16 copy (~1.9 GB on Qwen3.6-35B-A3B). NOT safe with MTP speculative decoding: something on the
-        # spec-decode path still touches the original weight memory and the GPU faults (CAT error, -EPERM). Default: keep.
+    if _b70_os.environ.get('B70_LINEAR_FP8_FREE', '1') == '1':
+        # frees the bf16 copy (~2.6 GiB on Qwen3.6-35B-A3B). On image b70.2 this faulted the GPU under MTP (CAT error);
+        # on b70.3 it never reproduced (eager + graph probes found no reader of the freed weight; MTP4 under load with and
+        # without prefix caching; 10 min mixed-load stress; same speed as keeping it). B70_LINEAR_FP8_FREE=0 keeps it.
         layer.weight = torch.nn.Parameter(torch.empty((0, W.shape[1]), dtype=W.dtype, device=W.device), requires_grad=False)
     _B70_FP8_N[0] += 1; _B70_FP8_N[1] += W.numel()
     if _B70_FP8_N[0] in (1, 10, 50, 100, 200):

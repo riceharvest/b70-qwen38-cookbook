@@ -2,7 +2,7 @@
 # Build (and optionally push) the prebuilt image. usage: docker/build.sh [--push]
 set -euo pipefail
 cd "$(dirname "$0")/.."
-TAG=${TAG:-v0.31.0-b70.3}; IMG=ghcr.io/riceharvest/b70-vllm
+TAG=${TAG:-v0.31.0-b70.4}; IMG=ghcr.io/riceharvest/b70-vllm
 [ -f kernels/libattn_kernels_xe_2.b70.so ] || gh release download v3 -p 'libattn_kernels_xe_2.b70.so' -D kernels
 [ -f kernels/b70_moe_gemv.so ] || gh release download v3 -p 'b70_moe_gemv.so' -D kernels
 # the patches must apply to the base image's vLLM before we build (CPU only, ~10 s; tests/README.md). SKIP_PATCH_TESTS=1 skips.

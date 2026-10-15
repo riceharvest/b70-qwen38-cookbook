@@ -3,6 +3,17 @@
 What each release changed, measured on one Intel Arc Pro B70 (32 GB, stock 275 W), one request at a time, greedy,
 512-token answers. Details and methods are in the [README](README.md). Newest first.
 
+## image b70.4 (2026-10-15): bf16 copies of the fp8 linears freed by default
+
+Image `ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.4` (= `latest`), no new kernels (same .so files as v3). The fp8
+weight-only linears no longer keep their bf16 copy: Qwen3.6-35B-A3B weights 19.13 instead of 21.75 GiB, same speed
+(MTP4 kept vs freed, alternating in one session: 212.2 / 143.5 vs 213.0 / 142.7 and 206.9 / 135.0 vs 210.3 / 141.6).
+On b70.2 freeing faulted the GPU under MTP; on b70.3 it never reproduced: eager and XPU-graph probes found nothing that
+reads the freed weights, MTP4 under load with and without prefix caching, and a 10 min mixed stress (8 concurrent:
+thinking QA, 3000-token code, ~10K-token contexts; 184 requests, 0 garbage, 0 xe faults). `B70_LINEAR_FP8_FREE=0` keeps
+the copy. Image test: 0/32 corrupted outputs on MoE and on the dense 27B; dense speed identical to b70.3 in the same
+session (101.4 / 72.6 vs 101.2 / 72.9).
+
 ## v3 (2026-10-15): Qwen3.6-35B-A3B MoE
 
 [Release](https://github.com/riceharvest/b70-qwen38-cookbook/releases/tag/v3) · image `ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.3`
