@@ -165,6 +165,51 @@ the leanest layout above reads 1.68 GB. With MTP k=4 at 3.66 accepted tokens a s
 touched by 5 tokens alone are ~2.5 GB. It would need ~2-bit weights everywhere plus k>=8 drafts with near-perfect
 acceptance. 800+ tok/s is real only as aggregate throughput over many concurrent requests.
 
+### Many users at once (c=64)
+
+64 concurrent users, random 512-token prompts, 512 output tokens each (`ignore_eos`), 16K max context, no MTP, one B70,
+VRAM capped at <=25 GB (`--gpu-memory-utilization 0.82`). Compared with the best public B70 entry on
+[localmaxxing](https://localmaxxing.com) for this model at batch 64 (SergiioB, 2026-08-07, same workload shape):
+
+| | SergiioB (localmaxxing) | this stack | |
+|---|---|---|---|
+| generation tok/s (= 64 / median TPOT) | 1139.8 (TPOT 56 ms) | **1511.5** (TPOT 42.3 ms, p99 45.3) | +33% |
+| total tok/s (prompt + output, wall clock) | 1967.7 | **2768.9** | +41% |
+| requests actually running | 64 | 64 (engine log: Running 64, Waiting 0, KV cache 54%) | |
+
+32 users: 1081.8 generation / 1986 total. What made the difference at c=64:
+
+- **GDN (linear-attention) recurrent state in fp16** instead of the checkpoint's fp32 (`--mamba-ssm-cache-dtype float16`).
+  At 64 sequences the state is ~1/3 of the bytes moved per decode step; fp16 halves it and halves its memory, so all
+  64 requests fit. Quality check on the decode path (8 x 1024-token greedy generations, each scored against fp32-state
+  prefill): KL 0.0027 / 0.0034 / 0.0035 at positions 0-255 / 256-511 / 512+, versus 0.0049 / 0.0023 / 0.0041 for
+  the fp32 state itself (the numerical noise floor); top-1 agreement 98.6-99.5%, same as fp32.
+- **Prefix caching off.** With it on, vLLM keeps extra GDN state per block ("align" mode) and only 29 of 64 requests fit.
+- fp8 weight-only attention/GDN/shared expert + fp8 lm_head (the image default; KL 0.019 vs the checkpoint), with the
+  bf16 copies freed (`B70_LINEAR_FP8_FREE=1`, safe without MTP).
+
+Caveats: SergiioB's checkpoint (llmfan46's MTP-preserved GPTQ-Int4) also stores the linear-attention projections and the
+shared expert in int4, so it reads fewer bytes per step than palmfuture's (bf16 there, fp8 here); that favours his run.
+His was measured at a 165 W power cap, ours at the card's stock power limit (draw not logged). Different vLLM (his
+0.21 build, ours v0.31). MTP doesn't help here yet: each speculative token keeps its own fp32 GDN state slot, so MTP
+at c=64 doesn't fit in 25 GB.
+
+```bash
+docker run -d --name b70-many --device /dev/dri -v /dev/dri:/dev/dri:ro --shm-size 8g -p 8000:8000 -v ~/models:/models \
+  -e B70_TARGET_LMHEAD_FP8=1 -e B70_LINEAR_FP8_FREE=1 \
+  -e 'B70_LINEAR_FP8_RE=(self_attn\.(qkv_proj|o_proj)|linear_attn\.(in_proj_qkvz|in_proj_qkv|in_proj_z|out_proj)|shared_expert\.(gate_up_proj|down_proj))$' \
+  --entrypoint vllm ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.3 serve palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4 \
+  --served-model-name moe --port 8000 --distributed-executor-backend mp --quantization gptq --dtype float16 \
+  --kv-cache-dtype fp8 --max-model-len 16384 --gpu-memory-utilization 0.82 --max-num-seqs 64 --max-num-batched-tokens 8192 \
+  --language-model-only --cpu-offload-gb 4 --cpu-offload-params embed_tokens --no-enable-prefix-caching \
+  --mamba-ssm-cache-dtype float16 --compilation-config '{"cudagraph_capture_sizes":[1,2,4,8,16,24,32,40,48,56,64]}'
+
+# the benchmark (vLLM's own client, inside the container)
+docker exec b70-many vllm bench serve --backend vllm --base-url http://localhost:8000 --model moe \
+  --tokenizer palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4 --dataset-name random --random-input-len 512 --random-output-len 512 \
+  --ignore-eos --num-prompts 128 --max-concurrency 64 --seed 0 --temperature 0 --percentile-metrics ttft,tpot,itl
+```
+
 ## What's in here
 
 | Path | |
