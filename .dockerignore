@@ -3,3 +3,4 @@
 !runtime
 !docker
 !kernels/libattn_kernels_xe_2.b70.so
+!kernels/b70_moe_gemv.so

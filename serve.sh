@@ -10,6 +10,10 @@ SO=/opt/venv/lib/python3.12/site-packages/vllm_xpu_kernels/libattn_kernels_xe_2.
 SO_FILE=${SO_FILE:-$HERE/kernels/libattn_kernels_xe_2.b70.so}
 # packed MTP verify needs the v2 kernel (zero-sum guard); the v1 .so corrupts some outputs ("!!!!") with it on
 KMOUNT=(); SPEC_PACKED=${B70_SPEC_PACKED:-1}
+# MoE models: int4 decode GEMV (kernels/b70_moe_gemv.so, release v3) + fp8 weight-only for linears a checkpoint ships in bf16
+MOE_SO=${MOE_SO:-$HERE/kernels/b70_moe_gemv.so}; MOE_GEMV=0; MOEMOUNT=()
+[ -f "$MOE_SO" ] && { MOEMOUNT=(-v "$MOE_SO:/opt/b70moe/b70_moe_gemv.so:ro"); MOE_GEMV=${B70_MOE_GEMV:-1}; }
+LINEAR_FP8_RE=${B70_LINEAR_FP8_RE-'(self_attn\.(qkv_proj|o_proj)|linear_attn\.(in_proj_qkvz|in_proj_qkv|in_proj_z|out_proj)|shared_expert\.(gate_up_proj|down_proj))$'}; [ "${B70_LINEAR_FP8:-1}" = 0 ] && LINEAR_FP8_RE=""
 if [ -f "$SO_FILE" ]; then
   KMOUNT=(-v "$SO_FILE:$SO:ro")   # built for THIS image only (kernels/README.md)
   if [ "$SPEC_PACKED" = 1 ] && sha256sum "$SO_FILE" | grep -q '^aa241d52a601'; then
@@ -22,17 +26,18 @@ else
 fi
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" -p "$PORT:$PORT" --device /dev/dri -v /dev/dri:/dev/dri:ro --shm-size 8g \
-  -v "$MODEL_DIR:/model:ro" -v "$HERE/patches:/patches:ro" -v "$HERE/runtime:/opt/b70:ro" "${KMOUNT[@]}" \
+  -v "$MODEL_DIR:/model:ro" -v "$HERE/patches:/patches:ro" -v "$HERE/runtime:/opt/b70:ro" "${KMOUNT[@]}" "${MOEMOUNT[@]}" \
   -e PYTORCH_ALLOC_CONF=expandable_segments:True -e VLLM_TARGET_DEVICE=xpu -e ZE_FLAT_DEVICE_HIERARCHY=COMPOSITE \
   -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK:-0} -e CCL_ATL_TRANSPORT=mpi -e CCL_PROCESS_LAUNCHER=none \
   -e B70_MTP_BF16_DRAFT=1 -e B70_DRAFT_LMHEAD_INT4=1 -e B70_DRAFT_MTP_INT4=1 -e VLLM_XPU_ENABLE_XPU_GRAPH=1 \
   -e B70_DRAFT_VOCAB=/opt/b70/draft_vocab_64k.json -e B70_TARGET_LMHEAD_FP8=${B70_TARGET_LMHEAD_FP8:-1} -e B70_SPEC_PACKED=$SPEC_PACKED \
+  -e B70_MOE_GEMV=$MOE_GEMV -e "B70_LINEAR_FP8_RE=$LINEAR_FP8_RE" \
   -e PORT=$PORT -e GPU_UTIL=$GPU_UTIL \
   --entrypoint bash $IMG -lc '
 set -e
 for p in patch_mtp_nightly patch_mtp_boundary patch_draft_lmhead_int4 patch_draft_mtp_int4 patch_gdn_mixed_split_v5 \
          patch_fix_accepted_sync patch_fix_backward_copy patch_fix_eagle_drop; do python /patches/sergiiob/$p.py; done
-for p in patch_embed_uva patch_draft_vocab patch_asym_gptq patch_target_lmhead_fp8 patch_spec_packed; do python /patches/b70/$p.py; done
+for p in patch_embed_uva patch_draft_vocab patch_asym_gptq patch_target_lmhead_fp8 patch_spec_packed patch_moe_gemv patch_linear_fp8; do python /patches/b70/$p.py; done
 exec vllm serve /model --port $PORT --served-model-name qwen38 --distributed-executor-backend mp \
   --quantization gptq --dtype float16 --kv-cache-dtype fp8 --max-model-len 262144 --gpu-memory-utilization $GPU_UTIL \
   --max-num-seqs 8 --max-num-batched-tokens 8192 \

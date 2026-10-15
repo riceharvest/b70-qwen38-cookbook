@@ -1,0 +1,155 @@
+// B70: decode-size GEMV for int4 MoE experts (replaces the CUTLASS grouped GEMM when each expert gets only a few rows).
+//
+// Layout = what vllm_xpu_kernels.XpuFusedMoe hands to cutlass_grouped_gemm_interface for int4:
+//   A    [rows, K]       fp16/bf16, rows sorted by expert (remap_hidden_states), rows_per_expert[e] rows for expert e
+//   B    [E, N, K/2]     int8, two signed 4-bit values per byte (implement_zp: u4 - 8), element k in byte k/2,
+//                        LOW_NIBBLE_FIRST: element 2j = low nibble, 2j+1 = high nibble (checked against CUTLASS in test.py)
+//   S    [E, N, K/G]     same dtype as A, per-group scale (symmetric, no zero point)
+//   D    [rows, N]       same dtype as A
+// One subgroup (16 lanes) computes NR output columns n for up to MCH rows of one expert; lanes split K in 16-element
+// chunks (8-byte weight loads, 128 B contiguous per row per subgroup). Work-groups of experts with no rows exit at once.
+#include <sycl/sycl.hpp>
+#include <algorithm>
+#include <torch/extension.h>
+#include <c10/xpu/XPUStream.h>
+
+namespace {
+constexpr int SG = 16;      // subgroup size
+
+template <typename T, int NR, int SGS_PER_WG, bool LOW_FIRST, int KCV, int MC>
+struct MoeGemvKernel {
+  const T* A; const int8_t* B; const T* S; const int* rows; T* D;
+  int N, K, E, G, nblocks;
+  sycl::local_accessor<int, 1> slm;
+  [[sycl::reqd_sub_group_size(SG)]] void operator()(sycl::nd_item<1> it) const {
+    auto sg = it.get_sub_group();
+    const int wg = it.get_group(0);
+    const int slot = wg / nblocks, nb = wg % nblocks;
+    // find the slot-th expert with rows > 0 and its row offset: cooperative scan (each work-item takes a slice)
+    {
+      const int wi = it.get_local_id(0), ws = it.get_local_range(0);
+      const int chunk = (E + ws - 1) / ws, i0 = sycl::min(E, wi * chunk), i1 = sycl::min(E, i0 + chunk);
+      int cnt = 0, rsum = 0;
+      for (int i = i0; i < i1; ++i) { const int r = rows[i]; cnt += r > 0; rsum += r; }
+      const int ecnt = sycl::exclusive_scan_over_group(it.get_group(), cnt, sycl::plus<int>());
+      const int erows = sycl::exclusive_scan_over_group(it.get_group(), rsum, sycl::plus<int>());
+      if (wi == 0) slm[0] = -1;
+      sycl::group_barrier(it.get_group());
+      if (slot >= ecnt && slot < ecnt + cnt) {
+        int seen = ecnt, pre = erows;
+        for (int i = i0; i < i1; ++i) {
+          const int r = rows[i];
+          if (r > 0) { if (seen == slot) { slm[0] = i; slm[1] = pre; break; } ++seen; }
+          pre += r;
+        }
+      }
+    }
+    sycl::group_barrier(it.get_group());
+    const int e = slm[0], pre = slm[1];
+    if (e < 0) return;
+    const int m_e = rows[e];
+    const int sgid = sg.get_group_linear_id(), lane = sg.get_local_linear_id();
+    const int n0 = (nb * SGS_PER_WG + sgid) * NR;
+    if (n0 >= N) return;
+    const int ngroups = K / G;
+    const int8_t* Be = B + (int64_t)e * N * (K / 2);
+    const T* Se = S + (int64_t)e * N * ngroups;
+    using WV = sycl::vec<uint32_t, KCV / 8>;     // KCV int4 values = KCV/2 bytes
+    using AV = sycl::vec<T, 8>;
+    for (int m0 = 0; m0 < m_e; m0 += MC) {
+      const int mc = sycl::min(MC, m_e - m0);
+      float acc[NR][MC];
+#pragma unroll
+      for (int r = 0; r < NR; ++r)
+#pragma unroll
+        for (int m = 0; m < MC; ++m) acc[r][m] = 0.f;
+      for (int kb = lane * KCV; kb < K; kb += SG * KCV) {
+        float a[MC][KCV];
+#pragma unroll
+        for (int m = 0; m < MC; ++m) {
+          if (m < mc) {
+            const AV* ap = reinterpret_cast<const AV*>(A + (int64_t)(pre + m0 + m) * K + kb);
+#pragma unroll
+            for (int v = 0; v < KCV / 8; ++v) { AV x = ap[v];
+#pragma unroll
+              for (int j = 0; j < 8; ++j) a[m][v * 8 + j] = static_cast<float>(x[j]); }
+          }
+        }
+        const int g = kb / G;
+#pragma unroll
+        for (int r = 0; r < NR; ++r) {
+          const int n = n0 + r;
+          if (n >= N) break;
+          const WV w = *reinterpret_cast<const WV*>(Be + (int64_t)n * (K / 2) + kb / 2);
+          const float s = static_cast<float>(Se[(int64_t)n * ngroups + g]);
+          float d[MC];
+#pragma unroll
+          for (int m = 0; m < MC; ++m) d[m] = 0.f;
+#pragma unroll
+          for (int v = 0; v < KCV / 8; ++v) {
+            const uint32_t word = w[v];
+#pragma unroll
+            for (int j = 0; j < 8; ++j) {
+              int q = (word >> (4 * j)) & 0xF; q = q >= 8 ? q - 16 : q;
+              const int k = v * 8 + (LOW_FIRST ? j : (j ^ 1));
+#pragma unroll
+              for (int m = 0; m < MC; ++m) d[m] += (float)q * a[m][k];
+            }
+          }
+#pragma unroll
+          for (int m = 0; m < MC; ++m) acc[r][m] += d[m] * s;
+        }
+      }
+#pragma unroll
+      for (int r = 0; r < NR; ++r) {
+        const int n = n0 + r;
+#pragma unroll
+        for (int m = 0; m < MC; ++m) {
+          const float v = sycl::reduce_over_group(sg, acc[r][m], sycl::plus<float>());
+          if (lane == 0 && m < mc && n < N) D[(int64_t)(pre + m0 + m) * N + n] = static_cast<T>(v);
+        }
+      }
+    }
+  }
+};
+
+template <typename T, int NR, int SGS>
+void launch(const at::Tensor& A, const at::Tensor& B, const at::Tensor& S, const at::Tensor& rows, at::Tensor& D,
+            int64_t N, int64_t K, int64_t E, int64_t G, bool low_first) {
+  auto& q = c10::xpu::getCurrentXPUStream().queue();
+  const int nblocks = (int)((N + NR * SGS - 1) / (NR * SGS));
+  const int64_t slots = std::min<int64_t>(A.size(0), E);       // at most one active expert per input row
+  sycl::range<1> global(slots * nblocks * SGS * SG), local(SGS * SG);
+  const T* a = reinterpret_cast<const T*>(A.data_ptr()); const T* s = reinterpret_cast<const T*>(S.data_ptr());
+  T* d = reinterpret_cast<T*>(D.data_ptr());
+  const int8_t* b = reinterpret_cast<const int8_t*>(B.data_ptr()); const int* r = rows.data_ptr<int>();
+  q.submit([&](sycl::handler& h) {
+    sycl::local_accessor<int, 1> slm(2, h);
+    if (low_first)
+      h.parallel_for(sycl::nd_range<1>(global, local), MoeGemvKernel<T, NR, SGS, true, 32, 2>{a, b, s, r, d, (int)N, (int)K, (int)E, (int)G, nblocks, slm});
+    else
+      h.parallel_for(sycl::nd_range<1>(global, local), MoeGemvKernel<T, NR, SGS, false, 32, 2>{a, b, s, r, d, (int)N, (int)K, (int)E, (int)G, nblocks, slm});
+  });
+}
+}  // namespace
+
+void moe_int4_gemv(const at::Tensor& A, const at::Tensor& B, const at::Tensor& S, const at::Tensor& rows, at::Tensor& D,
+                   int64_t N, int64_t K, int64_t E, int64_t G, int64_t nr, bool low_first) {
+  TORCH_CHECK(A.is_contiguous() && B.is_contiguous() && S.is_contiguous() && D.is_contiguous(), "contiguous inputs");
+  TORCH_CHECK(K % (SG * 32) == 0 && G % 32 == 0, "K multiple of 512, G multiple of 32");
+  TORCH_CHECK(rows.scalar_type() == at::kInt, "rows_per_expert int32");
+  if (A.scalar_type() == at::kHalf) {
+    if (nr == 4) launch<sycl::half, 4, 8>(A, B, S, rows, D, N, K, E, G, low_first);
+    else launch<sycl::half, 8, 4>(A, B, S, rows, D, N, K, E, G, low_first);
+  } else if (A.scalar_type() == at::kBFloat16) {
+    if (nr == 4) launch<sycl::ext::oneapi::bfloat16, 4, 8>(A, B, S, rows, D, N, K, E, G, low_first);
+    else launch<sycl::ext::oneapi::bfloat16, 8, 4>(A, B, S, rows, D, N, K, E, G, low_first);
+  } else {
+    TORCH_CHECK(false, "fp16/bf16 activations only");
+  }
+}
+
+TORCH_LIBRARY(b70_moe, m) {
+  m.def("gemv(Tensor A, Tensor B, Tensor S, Tensor rows, Tensor(a!) D, int N, int K, int E, int G, int nr, bool low_first) -> ()");
+}
+TORCH_LIBRARY_IMPL(b70_moe, XPU, m) { m.impl("gemv", &moe_int4_gemv); }

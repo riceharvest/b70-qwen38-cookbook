@@ -40,6 +40,7 @@ OpenAI API on :8000, model name `qwen38`. Pick the model with `MODEL` (an HF rep
 | `darioooooo0o/Qwen3.8-27B-GPTQ-Int4-asym` (default) | Qwen3.8-27B, 262K context + vision, MTP, tool calls |
 | `darioooooo0o/Qwen3.8-27B-Uncensored-GPTQ-Int4-asym` | the uncensored finetune, same setup |
 | `darioooooo0o/JEV-27B-VL-GPTQ-Int4-asym` | JEV decision model: `/v1/decide` (System 1) + chat (System 2), 131K context |
+| `palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4` | Qwen3.6-35B-A3B MoE: ~120 tok/s without MTP, ~165-245 with it (see the MoE section) |
 
 JEV repos are detected automatically (LoRA on, fp8 lm_head off). Env overrides: `PORT`, `SERVED_NAME`, `GPU_UTIL`,
 `MAX_MODEL_LEN`, `FAST=0` (eager, no MTP). Anything after the image name is passed to vLLM. Packed MTP verify is on
@@ -53,7 +54,7 @@ Rebuild it yourself with `docker/build.sh` (Dockerfile in `docker/`).
 git clone https://github.com/riceharvest/b70-qwen38-cookbook && cd b70-qwen38-cookbook
 hf download darioooooo0o/Qwen3.8-27B-GPTQ-Int4-asym --local-dir ~/models/qwen38-b70
 # attention kernels for the pinned image (optional, but it's the fast path)
-gh release download v2 -p 'libattn_kernels_xe_2.b70.so' -D kernels   # or grab it from the Releases page
+gh release download v3 -p '*.so' -D kernels   # attention kernels + MoE decode GEMV (or grab them from Releases)
 MODEL_DIR=~/models/qwen38-b70 ./serve.sh                               # OpenAI API on :8000, model name "qwen38"
 ```
 
@@ -96,11 +97,78 @@ depends on the text, so the ms/step row (time per verify step) is the stable num
 The cookbook's 6-question arithmetic canary: mine scores 4/6, SergiioB's 6/6. With 6 greedy near-tie questions that's
 noise. On 100 seeded questions of the same kind (`bench/arith_battery.py`), mine scores 48/100 and his 49/100.
 
+## Qwen3.6-35B-A3B (MoE) on the same stack
+
+Same image, different `MODEL`. Text-only use: add `--language-model-only` after the image name (it frees the vision
+profiling memory):
+
+```bash
+docker run -d --name b70 --device /dev/dri -v /dev/dri:/dev/dri:ro --shm-size 8g -p 8000:8000 -v ~/models:/models \
+  -e MODEL=palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4 ghcr.io/riceharvest/b70-vllm:latest --language-model-only
+```
+
+That checkpoint ships the routed experts in int4 but attention, linear attention (GDN), the shared expert and the
+lm_head in bf16. Two MoE-specific additions make the difference on a B70:
+
+- **int4 MoE decode GEMV** (`kernels/moe-gemv/`, `patches/b70/patch_moe_gemv.py`): at decode each expert sees one row,
+  and the stock CUTLASS grouped GEMM spends ~40 us per call no matter how little work there is (8 experts = 13 MB, ~21 us
+  at full bandwidth). The GEMV takes over when a call has <= 8 rows: gate_up 56 -> 18 us, down 34 -> 14 us per layer.
+  Bigger calls (MTP verify, prefill) stay on CUTLASS.
+- **fp8 weight-only for the linears a checkpoint ships in bf16** (`patches/b70/patch_linear_fp8.py`): attention, GDN
+  projections and the shared expert are read as fp8 e4m3 with per-row scales (same kernel as the fp8 lm_head). KL vs the
+  bf16 weights 0.019, top-1 agreement 95.2%. `B70_LINEAR_FP8=0` turns it off. It keeps the bf16 copy allocated (+1.8 GB):
+  freeing it makes MTP fault the GPU, and the gain is bandwidth, not memory.
+
+Single request, 16K context, `GPU_UTIL=0.82`, code / prose answers of 512 tokens, decode tok/s:
+
+| setup | no MTP | MTP k=4 |
+|---|---|---|
+| stock vLLM XPU v0.31 image | 75.6 / 76.3 | 123.4 / 113.2 (fits <=25 GB only at 2K context) |
+| + cookbook patches (int4 draft head, int4 MTP layer, packed verify) | 73.4 / 73.7 | 175.9 / 126.6 |
+| + fp8 lm_head | 78.7 / 79.1 | 183.9 / 134.3 |
+| + int4 MoE decode GEMV | 93.8 / 94.3 | 200.8 / 145.4 |
+| **+ fp8 attention/GDN/shared expert (the image default)** | **118.9 / 119.6** | **243.7 / 164.4** |
+
+Prefill ~9.3-10.3K tok/s. MTP acceptance 3.3-3.6 on code, ~2.6 on prose. 0/32 corrupted outputs with 8 concurrent
+thinking-length requests. For comparison on localmaxxing (single B70, one request): 248 tok/s (vLLM 0.26 + MTP4, same
+checkpoint), 205 (vLLM 0.21 + MTP4), and the best llama.cpp runs I found are ~132 (SYCL, fused kernels, no MTP).
+
+**Decode GEMV check.** It matches CUTLASS to 3e-4 relative error per call (stress test: 900 routings incl. outlier
+activations; 500 replays inside an XPU graph), and in serving an eager cross-check of every decode call found zero
+mismatches over 2,048 steps. Greedy decode GEMV-vs-CUTLASS: per-step KL p50 0.0001, p99 0.043, 14/1555 steps > 0.05
+vs 12/1193 for CUTLASS graph-vs-eager (the numeric noise floor of the same code); divergences sit at near-ties.
+
+### How fast could it be? (per-token bytes vs 608 GB/s)
+
+| GB per generated token | as shipped (bf16 attn/GDN/head) | all int4 | int4 + fp8 head | int4 + int4 head |
+|---|---|---|---|---|
+| routed experts (8 of 256, int4) | 0.53 | 0.53 | 0.53 | 0.53 |
+| shared expert | 0.25 | 0.065 | 0.065 | 0.065 |
+| router | 0.04 | 0.04 | 0.04 | 0.04 |
+| attention (10 layers) | 0.55 | 0.14 | 0.14 | 0.14 |
+| linear attention / GDN (30 layers) | 2.02 | 0.52 | 0.52 | 0.52 |
+| lm_head (248K x 2048) | 1.02 | 1.02 | 0.51 | 0.26 |
+| GDN state + KV at 2K + embedding row | ~0.12 | ~0.12 | ~0.12 | ~0.12 |
+| **total** | **4.53** | **2.44** | **1.93** | **1.68** |
+| no MTP, tok/s at 100% / 88% of 608 GB/s | 134 / 118 | 249 / 219 | 315 / 277 | 362 / 318 |
+| MTP k=4 step (experts x4.7 + rest + 4 drafts) | 7.17 GB | 5.08 GB | 4.57 GB | 4.32 GB |
+| MTP k=4 at acceptance 3.66 (code) / 2.66 (prose), 100% | 310 / 226 | 438 / 318 | 487 / 354 | 515 / 374 |
+
+The image default reads fp8 attention/GDN/shared + fp8 head, about 2.6 GB per token: a ~233 tok/s ceiling without MTP,
+of which 119 is 51%. The rest is the routing and GDN kernels and the GEMV's own overhead. The x4.7 for experts under MTP
+assumes independent routing per draft token (5 tokens touch ~38 experts); real routing overlaps, so it's pessimistic.
+
+**What 800 tok/s single-stream would take:** at most 0.76 GB read per generated token. Without MTP that is impossible:
+the leanest layout above reads 1.68 GB. With MTP k=4 at 3.66 accepted tokens a step may read ~2.8 GB, but the experts
+touched by 5 tokens alone are ~2.5 GB. It would need ~2-bit weights everywhere plus k>=8 drafts with near-perfect
+acceptance. 800+ tok/s is real only as aggregate throughput over many concurrent requests.
+
 ## What's in here
 
 | Path | |
 |---|---|
 | `serve.sh` | the launcher (pinned image digest, all patches, flags) |
+| `kernels/moe-gemv/` | int4 MoE decode GEMV (SYCL source + build.sh); the built `b70_moe_gemv.so` is in release v3 |
 | `docker/` | the prebuilt image: `Dockerfile`, entrypoint `b70-serve.sh` (picks chat or JEV setup from the model), `build.sh` |
 | `patches/b70/` | my vLLM patches: asym GPTQ on XPU, fp8 lm_head, packed MTP verify hook, embed UVA, pruned draft vocab ([details](patches/b70/README.md)) |
 | `patches/sergiiob/` | SergiioB's MTP / GDN / prefix-cache patches, unchanged ([source](patches/sergiiob/SOURCE.md)) |
