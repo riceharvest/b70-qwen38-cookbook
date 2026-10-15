@@ -1,6 +1,6 @@
 # Prebuilt B70 image: pinned vLLM XPU v0.31.0 + the cookbook's patches applied + the B70 attention kernels baked in.
-# Build from the repo root (needs kernels/libattn_kernels_xe_2.b70.so; docker/build.sh fetches it from the v1 release):
-#   docker build -f docker/Dockerfile -t ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.1 .
+# Build from the repo root (needs kernels/libattn_kernels_xe_2.b70.so; docker/build.sh fetches it from the v2 release):
+#   docker build -f docker/Dockerfile -t ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.2 .
 FROM vllm/vllm-openai-xpu:v0.31.0@sha256:95ac815038c4b3537b173798bfe3b89bdf525a52bd653cd14d4deb01f1062be7
 LABEL org.opencontainers.image.source="https://github.com/riceharvest/b70-qwen38-cookbook" \
       org.opencontainers.image.description="vLLM XPU v0.31.0 for Intel Arc Pro B70: cookbook patches + B70 attention kernels baked in" \
@@ -16,5 +16,5 @@ RUN set -e; \
 COPY docker/b70-serve.sh /usr/local/bin/b70-serve
 ENV PYTORCH_ALLOC_CONF=expandable_segments:True VLLM_TARGET_DEVICE=xpu ZE_FLAT_DEVICE_HIERARCHY=COMPOSITE ZE_AFFINITY_MASK=0 \
     CCL_ATL_TRANSPORT=mpi CCL_PROCESS_LAUNCHER=none B70_MTP_BF16_DRAFT=1 B70_DRAFT_LMHEAD_INT4=1 B70_DRAFT_MTP_INT4=1 \
-    VLLM_XPU_ENABLE_XPU_GRAPH=1 B70_DRAFT_VOCAB=/opt/b70/draft_vocab_64k.json B70_SPEC_PACKED=0 HF_HOME=/models
+    VLLM_XPU_ENABLE_XPU_GRAPH=1 B70_DRAFT_VOCAB=/opt/b70/draft_vocab_64k.json B70_SPEC_PACKED=1 HF_HOME=/models
 ENTRYPOINT ["b70-serve"]

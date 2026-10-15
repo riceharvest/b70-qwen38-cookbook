@@ -40,8 +40,8 @@ OpenAI API on :8000, model name `qwen38`. Pick the model with `MODEL` (an HF rep
 | `darioooooo0o/JEV-27B-VL-GPTQ-Int4-asym` | JEV decision model: `/v1/decide` (System 1) + chat (System 2), 131K context |
 
 JEV repos are detected automatically (LoRA on, fp8 lm_head off). Env overrides: `PORT`, `SERVED_NAME`, `GPU_UTIL`,
-`MAX_MODEL_LEN`, `FAST=0` (eager, no MTP). Anything after the image name is passed to vLLM. Packed MTP verify is off
-(see below). Needs ~12 GB of free host RAM: embeddings and the vision tower live in host RAM via UVA.
+`MAX_MODEL_LEN`, `FAST=0` (eager, no MTP). Anything after the image name is passed to vLLM. Packed MTP verify is on
+(fixed v2 kernel, see below). Needs ~12 GB of free host RAM: embeddings and the vision tower live in host RAM via UVA.
 
 Rebuild it yourself with `docker/build.sh` (Dockerfile in `docker/`).
 
@@ -51,7 +51,7 @@ Rebuild it yourself with `docker/build.sh` (Dockerfile in `docker/`).
 git clone https://github.com/riceharvest/b70-qwen38-cookbook && cd b70-qwen38-cookbook
 hf download darioooooo0o/Qwen3.8-27B-GPTQ-Int4-asym --local-dir ~/models/qwen38-b70
 # attention kernels for the pinned image (optional, but it's the fast path)
-gh release download v1 -p 'libattn_kernels_xe_2.b70.so' -D kernels   # or grab it from the Releases page
+gh release download v2 -p 'libattn_kernels_xe_2.b70.so' -D kernels   # or grab it from the Releases page
 MODEL_DIR=~/models/qwen38-b70 ./serve.sh                               # OpenAI API on :8000, model name "qwen38"
 ```
 
@@ -73,10 +73,13 @@ depends on the text, so the ms/step row (time per verify step) is the stable num
 | tok/s | 2042 | 1822 | 1609 | 1422 | 824 (needle found) |
 
 - Prefix cache: a 16K-token prompt takes 8.5 s cold and 1.5 s warm.
-- **Packed MTP verify is now off by default (fixed 2026-10-14).** With about 8 long generations in flight it turned
-  some outputs into `!!!!` garbage (2 of 16 thinking-length answers, 0 of 32 with it off). It only saves about 3% for
-  a single request (code 84 vs 81 tok/s, prose 78 vs 76 on my quick bench), so it isn't worth it. The decode numbers
-  above were measured with it on; `B70_SPEC_PACKED=1` turns it back on for single-user setups.
+- **Packed MTP verify: fixed in the v2 kernel (2026-10-15).** With the v1 `.so`, a split whose keys were all masked
+  for draft row 0 gave a softmax sum of 0, the epilogue computed 0 x (1/0) = NaN, and the output turned into `!!!!`.
+  That happened at specific KV lengths (e.g. 2049-2052) with 1-4 requests in flight. The v2 kernel adds a zero-sum guard
+  (`kernels/zero-sum-guard.patch`). Kernel A/B: NaN in exactly the 28 predicted cases with v1, 0 with v2. Serving,
+  8 concurrent thinking-length answers: v1 2-3/16 corrupted per run, v2 0/48. Packed is on by default again;
+  `serve.sh` keeps it off if it finds the v1 `.so`. Single stream at 131K ctx: packed 82 / 77 tok/s (code / prose)
+  vs 80 / 77 off.
 - Short requests: with 12 concurrent, 10-11 of 12 outputs are byte-identical to running them alone. The rest diverge
   at near-ties (batched fp16 math isn't batch-invariant).
 
