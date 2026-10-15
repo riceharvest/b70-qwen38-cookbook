@@ -20,6 +20,8 @@ prefix-cache patches are included here (MIT). For a different engine, his EXL3 r
 
 New to the B70? [Awesome Arc Pro B70](https://github.com/riceharvest/awesome-b70) collects setup, engines and known driver bugs with workarounds. Setup problems (driver, firmware, Resizable BAR, permissions, GPU hangs)? Run [b70-doctor](https://github.com/riceharvest/b70-doctor) first: `curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-doctor/main/b70-doctor.sh | bash` (read-only).
 
+Want llama.cpp instead of vLLM? [b70-llama-builds](https://github.com/riceharvest/b70-llama-builds) has prebuilt llama.cpp for the B70: SYCL compiled ahead of time for the card with the oneAPI runtime bundled (no oneAPI install, no hour-long build), and Vulkan with the B70 fixes.
+
 ## Quick start (prebuilt image)
 
 One command, no build. The image is the pinned vLLM XPU v0.31.0 with this repo's patches and the B70 attention
