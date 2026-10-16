@@ -73,6 +73,9 @@ depends on the text, so the ms/step row (time per verify step) is the stable num
 | decode tok/s, greedy | code 113 / json 119 / prose 66 / reasoning 96 | 72 | 72 | 65-67 |
 | decode tok/s, sampled (T=1, top_p .95, top_k 20) | code 107-111 / json 115-122 / prose 60-66 / reasoning 92-97 | - | 73-77 | 66-69 |
 
+Image b70.5 (2026-10-16) decodes another ~10% faster with MTP: same session, b70.4 -> b70.5, code 101.5 -> 111.9,
+json 110.9 -> 121.7, prose 60.0 -> 66.2, reasoning 95.7 -> 107.0 tok/s, same tokens per step ([RESULTS](RESULTS.md)).
+
 | Prefill (cold) | 5.7K | 24K | 48K | 74K | 237K |
 |---|---|---|---|---|---|
 | tok/s | 2042 | 1822 | 1609 | 1422 | 824 (needle found) |
