@@ -32,6 +32,9 @@ fi
 export B70_TARGET_LMHEAD_FP8=${B70_TARGET_LMHEAD_FP8:-1}
 # linears a checkpoint ships in bf16 (e.g. attention/GDN/shared expert in GPTQ MoE quants) -> fp8 weight-only
 [ "${B70_LINEAR_FP8:-1}" = 1 ] && export B70_LINEAR_FP8_RE="${B70_LINEAR_FP8_RE-(self_attn\.(qkv_proj|o_proj)|linear_attn\.(in_proj_qkvz|in_proj_qkv|in_proj_z|out_proj)|shared_expert\.(gate_up_proj|down_proj))$}"
-exec vllm serve "$DIR" --served-model-name "${SERVED_NAME:-qwen38}" "${COMMON[@]}" \
+# inline system messages (Claude Code per-turn reminders via /v1/messages) render in place, so the prefix cache keeps
+# working; the stock Qwen template raises on them and vLLM then rewrites the system prompt every turn
+CT=$(python /opt/b70/inline_system_template.py "$DIR" /tmp/chat_template_b70.jinja); CTARGS=(); [ -n "$CT" ] && CTARGS=(--chat-template "$CT")
+exec vllm serve "$DIR" "${CTARGS[@]}" --served-model-name "${SERVED_NAME:-qwen38}" "${COMMON[@]}" \
   --max-model-len "${MAX_MODEL_LEN:-262144}" --gpu-memory-utilization "${GPU_UTIL:-0.93}" "${FASTARGS[@]}" \
   --enable-auto-tool-choice --tool-call-parser qwen3_xml --reasoning-parser qwen3 --generation-config auto "$@"

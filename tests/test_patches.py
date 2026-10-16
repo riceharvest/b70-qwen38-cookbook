@@ -271,3 +271,53 @@ def test_eager_token_pad_buckets_none_mode(patched):
     assert "self.max_num_tokens" in block  # never past the input buffers
     assert "batch_desc = replace(batch_desc, num_tokens=_b70_padded)" in block
     compile(r, "model_runner.py", "exec")
+
+
+def test_inline_system_template(tmp_path):
+    """runtime/inline_system_template.py: the Qwen3.8 template accepts a non-leading system message (vLLM's /v1/messages
+    probe then keeps Claude Code's per-turn reminders in place instead of rewriting the system prompt every turn), and
+    renders conversations without one byte-identically."""
+    jinja2 = pytest.importorskip("jinja2")
+    import jinja2.ext
+    import jinja2.sandbox
+    src = tmp_path / "model"
+    src.mkdir()
+    stock = (  # same structure as Qwen3.8: leading system rendered before the loop, the loop only guards
+        "{%- if messages[0].role == 'system' %}{{- '<|im_start|>system\\n' + messages[0].content + '<|im_end|>\\n' }}"
+        "{%- endif %}\n"
+        "{%- for message in messages %}\n"
+        "    {%- set content = message.content %}\n"
+        '    {%- if message.role == "system" %}\n'
+        "        {%- if not loop.first %}\n"
+        "            {{- raise_exception('System message must be at the beginning.') }}\n"
+        "        {%- endif %}\n"
+        "    {%- else %}\n"
+        "        {{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>\\n' }}\n"
+        "    {%- endif %}\n"
+        "{%- endfor %}\n"
+    )
+    (src / "chat_template.jinja").write_text(stock)
+    out = tmp_path / "t.jinja"
+    r = subprocess.run([sys.executable, str(REPO / "runtime" / "inline_system_template.py"), str(src), str(out)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.strip() == str(out)
+    env = jinja2.sandbox.ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True,
+                                                       extensions=[jinja2.ext.loopcontrols])
+
+    def raise_exception(m):
+        raise jinja2.TemplateError(m)
+
+    env.globals["raise_exception"] = raise_exception
+    probe = [{"role": "system", "content": "t"}, {"role": "user", "content": "t"},
+             {"role": "system", "content": "t"}, {"role": "user", "content": "t"}]
+    with pytest.raises(jinja2.TemplateError):
+        env.from_string(stock).render(messages=probe)
+    rendered = env.from_string(out.read_text()).render(messages=probe)
+    assert rendered.count("<|im_start|>system") == 2
+    plain = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    assert env.from_string(out.read_text()).render(messages=plain) == env.from_string(stock).render(messages=plain)
+    # anchor missing -> no output, exit 0 (the launcher then keeps the model's template)
+    (src / "chat_template.jinja").write_text("{{ messages }}")
+    r = subprocess.run([sys.executable, str(REPO / "runtime" / "inline_system_template.py"), str(src), str(out)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout == ""
