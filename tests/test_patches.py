@@ -258,3 +258,16 @@ def test_spec_greedy_warmup_runs_second_pass(patched):
     assert "worker_sample_tokens, greedy=True" in w
     assert "SamplingParams(temperature=0)" in w
     compile(w, "warmup.py", "exec")
+
+
+@needs_src
+def test_eager_token_pad_buckets_none_mode(patched):
+    sandbox, _, _, _ = patched
+    r = (sandbox / "vllm/v1/worker/gpu/model_runner.py").read_text()
+    assert "_B70_EAGER_PAD = int(" in r
+    block = r[r.index("# B70_EAGER_PAD_TOKENS: bucket eager"):]
+    block = block[:block.index("if batch_desc.num_tokens == 0:")]
+    assert "batch_desc.cg_mode == CUDAGraphMode.NONE" in block and "not dummy_run" in block
+    assert "self.max_num_tokens" in block  # never past the input buffers
+    assert "batch_desc = replace(batch_desc, num_tokens=_b70_padded)" in block
+    compile(r, "model_runner.py", "exec")
