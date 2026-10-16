@@ -14,6 +14,8 @@ MTP_K=${B70_MTP_K:-4}; case "$MTP_K" in [1-9]) ;; *) echo "B70_MTP_K must be 1-9
 CAPTURE=$(python -c "import sys; k=int(sys.argv[1]); print(','.join(map(str, sorted({1, 2, 4, 8} | {(k + 1) * n for n in range(1, 9)}))))" "$MTP_K")
 SPEC="{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP_K,\"draft_sample_method\":\"probabilistic\"}"
 GRAPHS="{\"cudagraph_capture_sizes\":[$CAPTURE]}"
+# B70_PREFIX_UNIT=128: finer prefix-cache hits for multi-turn/tool loops (opt-in until validated with MTP)
+[ -n "${B70_PREFIX_UNIT:-}" ] && set -- --prefix-match-unit "$B70_PREFIX_UNIT" "$@"
 if [ "${FAST:-1}" = 1 ]; then FASTARGS=(--speculative-config "$SPEC" --compilation-config "$GRAPHS")
 else export VLLM_XPU_ENABLE_XPU_GRAPH=0; FASTARGS=(--enforce-eager); fi
 COMMON=(--port "$PORT" --distributed-executor-backend mp --quantization gptq --dtype float16 --kv-cache-dtype fp8

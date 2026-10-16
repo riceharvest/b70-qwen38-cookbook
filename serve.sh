@@ -3,6 +3,8 @@
 # usage: MODEL_DIR=/path/to/downloaded/model ./serve.sh        (env: PORT, NAME, GPU_UTIL, SO_FILE, B70_SPEC_PACKED, B70_GDN_STATE, B70_MTP_K)
 # B70_MTP_K: MTP draft tokens per step (default 4). Code/JSON/reasoning accept deep drafts often enough that 5 measured
 #   +0.4-0.6 tokens/step (prose: no gain) for one more draft pass (~0.7 ms); graph capture sizes follow k.
+# B70_PREFIX_UNIT=128: finer prefix-cache hits (--prefix-match-unit; must divide 1664). Multi-turn / tool-loop requests
+#   then re-prefill ~200 instead of ~1.7-3.3K tokens of history. Opt-in until validated (MTP + prefix cache class #53912).
 # B70_GDN_STATE=fp16: store the linear-attention (GDN) state in fp16 instead of the model config's fp32 (halves it; for many
 #   concurrent requests, see README "Many users at once")
 set -euo pipefail
@@ -29,6 +31,7 @@ else
   echo "note: $SO_FILE not found -> stock attention kernels, packed MTP verify off (slower; see kernels/README.md)" >&2
   SPEC_PACKED=0
 fi
+PREFIX_ARGS=""; [ -n "${B70_PREFIX_UNIT:-}" ] && PREFIX_ARGS="--prefix-match-unit ${B70_PREFIX_UNIT}"
 MTP_K=${B70_MTP_K:-4}; case "$MTP_K" in [1-9]) ;; *) echo "B70_MTP_K must be 1-9" >&2; exit 2 ;; esac
 CAPTURE=$(python3 -c "import sys; k=int(sys.argv[1]); print(','.join(map(str, sorted({1, 2, 4, 8} | {(k + 1) * n for n in range(1, 9)}))))" "$MTP_K")
 docker rm -f "$NAME" >/dev/null 2>&1 || true
@@ -39,7 +42,7 @@ docker run -d --name "$NAME" -p "$PORT:$PORT" --device /dev/dri -v /dev/dri:/dev
   -e B70_MTP_BF16_DRAFT=1 -e B70_DRAFT_LMHEAD_INT4=1 -e B70_DRAFT_MTP_INT4=1 -e VLLM_XPU_ENABLE_XPU_GRAPH=1 \
   -e B70_DRAFT_VOCAB=/opt/b70/draft_vocab_64k.json -e B70_TARGET_LMHEAD_FP8=${B70_TARGET_LMHEAD_FP8:-1} -e B70_SPEC_PACKED=$SPEC_PACKED \
   -e B70_MOE_GEMV=$MOE_GEMV -e "B70_LINEAR_FP8_RE=$LINEAR_FP8_RE" \
-  -e PORT=$PORT -e GPU_UTIL=$GPU_UTIL -e "B70_GDN_ARGS=$GDN_ARGS" -e MTP_K=$MTP_K -e CAPTURE=$CAPTURE \
+  -e PORT=$PORT -e GPU_UTIL=$GPU_UTIL -e "B70_GDN_ARGS=$GDN_ARGS" -e MTP_K=$MTP_K -e CAPTURE=$CAPTURE -e "PREFIX_ARGS=$PREFIX_ARGS" \
   --entrypoint bash $IMG -lc '
 set -e
 for p in patch_mtp_nightly patch_mtp_boundary patch_draft_lmhead_int4 patch_draft_mtp_int4 patch_gdn_mixed_split_v5 \
@@ -51,7 +54,7 @@ exec vllm serve /model --port $PORT --served-model-name qwen38 --distributed-exe
   --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP_K,\"draft_sample_method\":\"probabilistic\"}" \
   --compilation-config "{\"cudagraph_capture_sizes\":[$CAPTURE]}" \
   --cpu-offload-gb 4 --cpu-offload-params embed_tokens visual \
-  --enable-auto-tool-choice --tool-call-parser qwen3_xml --reasoning-parser qwen3 --generation-config auto $B70_GDN_ARGS'
+  --enable-auto-tool-choice --tool-call-parser qwen3_xml --reasoning-parser qwen3 --generation-config auto $B70_GDN_ARGS $PREFIX_ARGS'
 echo "starting $NAME on :$PORT (first start ~2-3 min; logs: docker logs -f $NAME)"
 for _ in $(seq 1 200); do curl -sf localhost:$PORT/health >/dev/null 2>&1 && { echo "$NAME READY on :$PORT"; exit 0; }; sleep 3; done
 echo "not ready yet - docker logs $NAME" >&2; exit 1
