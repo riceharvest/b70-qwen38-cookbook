@@ -37,4 +37,5 @@ export B70_TARGET_LMHEAD_FP8=${B70_TARGET_LMHEAD_FP8:-1}
 CT=$(python /opt/b70/inline_system_template.py "$DIR" /tmp/chat_template_b70.jinja); CTARGS=(); [ -n "$CT" ] && CTARGS=(--chat-template "$CT")
 exec vllm serve "$DIR" "${CTARGS[@]}" --served-model-name "${SERVED_NAME:-qwen38}" "${COMMON[@]}" \
   --max-model-len "${MAX_MODEL_LEN:-262144}" --gpu-memory-utilization "${GPU_UTIL:-0.93}" "${FASTARGS[@]}" \
-  --enable-auto-tool-choice --tool-call-parser qwen3_xml --reasoning-parser qwen3 --generation-config auto "$@"
+  --enable-auto-tool-choice --tool-call-parser qwen3_xml --reasoning-parser qwen3 --generation-config auto \
+  --enable-prompt-tokens-details "$@"

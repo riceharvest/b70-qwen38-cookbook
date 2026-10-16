@@ -55,7 +55,7 @@ exec vllm serve /model ${CT:+--chat-template $CT} --port $PORT --served-model-na
   --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP_K,\"draft_sample_method\":\"probabilistic\"}" \
   --compilation-config "{\"cudagraph_capture_sizes\":[$CAPTURE]}" \
   --cpu-offload-gb 4 --cpu-offload-params embed_tokens visual \
-  --enable-auto-tool-choice --tool-call-parser qwen3_xml --reasoning-parser qwen3 --generation-config auto $B70_GDN_ARGS $PREFIX_ARGS'
+  --enable-auto-tool-choice --tool-call-parser qwen3_xml --reasoning-parser qwen3 --generation-config auto --enable-prompt-tokens-details $B70_GDN_ARGS $PREFIX_ARGS'
 echo "starting $NAME on :$PORT (first start ~2-3 min; logs: docker logs -f $NAME)"
 for _ in $(seq 1 200); do curl -sf localhost:$PORT/health >/dev/null 2>&1 && { echo "$NAME READY on :$PORT"; exit 0; }; sleep 3; done
 echo "not ready yet - docker logs $NAME" >&2; exit 1
