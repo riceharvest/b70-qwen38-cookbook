@@ -75,6 +75,8 @@ depends on the text, so the ms/step row (time per verify step) is the stable num
 
 Image b70.5 (2026-10-16) decodes another ~10% faster with MTP: same session, b70.4 -> b70.5, code 101.5 -> 111.9,
 json 110.9 -> 121.7, prose 60.0 -> 66.2, reasoning 95.7 -> 107.0 tok/s, same tokens per step ([RESULTS](RESULTS.md)).
+Image b70.6 (2026-10-16) is 3.5-6% faster again, most at long context (64K: 42.8 -> 40.3 ms per step), fixes a
+stale-state bug on MTP steps without drafts, and accepts `reasoning_effort: high` ([RESULTS](RESULTS.md)).
 
 | Prefill (cold) | 5.7K | 24K | 48K | 74K | 237K |
 |---|---|---|---|---|---|

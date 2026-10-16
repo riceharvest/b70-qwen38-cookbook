@@ -1,6 +1,6 @@
 # Prebuilt B70 image: pinned vLLM XPU v0.31.0 + the cookbook's patches applied + the B70 attention kernels baked in.
 # Build from the repo root (needs kernels/libattn_kernels_xe_2.b70.so; docker/build.sh fetches it from the v2 release):
-#   docker build -f docker/Dockerfile -t ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.5 .
+#   docker build -f docker/Dockerfile -t ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.6 .
 FROM vllm/vllm-openai-xpu:v0.31.0@sha256:95ac815038c4b3537b173798bfe3b89bdf525a52bd653cd14d4deb01f1062be7
 LABEL org.opencontainers.image.source="https://github.com/riceharvest/b70-qwen38-cookbook" \
       org.opencontainers.image.description="vLLM XPU v0.31.0 for Intel Arc Pro B70: cookbook patches + B70 attention kernels baked in" \
