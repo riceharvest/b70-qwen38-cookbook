@@ -321,3 +321,38 @@ def test_inline_system_template(tmp_path):
     r = subprocess.run([sys.executable, str(REPO / "runtime" / "inline_system_template.py"), str(src), str(out)],
                        capture_output=True, text=True)
     assert r.returncode == 0 and r.stdout == ""
+
+
+def test_template_maps_openai_reasoning_effort(tmp_path):
+    """runtime/inline_system_template.py: 'high' (Hermes' default) and 'minimal' no longer raise (HTTP 400); the
+    supported values render unchanged."""
+    jinja2 = pytest.importorskip("jinja2")
+    import jinja2.ext
+    import jinja2.sandbox
+    src = tmp_path / "model"
+    src.mkdir()
+    stock = (
+        "{%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}\n"
+        "{%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}"
+        "{{- raise_exception('Unexpected reasoning effort') }}{%- endif %}\n"
+        "{{- resolved_reasoning_effort }}\n"
+    )
+    (src / "chat_template.jinja").write_text(stock)
+    out = tmp_path / "t.jinja"
+    r = subprocess.run([sys.executable, str(REPO / "runtime" / "inline_system_template.py"), str(src), str(out)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.strip() == str(out)
+    env = jinja2.sandbox.ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True,
+                                                       extensions=[jinja2.ext.loopcontrols])
+
+    def raise_exception(m):
+        raise jinja2.TemplateError(m)
+
+    env.globals["raise_exception"] = raise_exception
+    new = env.from_string(out.read_text())
+    assert new.render(reasoning_effort="high").strip() == "xhigh"
+    assert new.render(reasoning_effort="minimal").strip() == "low"
+    for e in ("xhigh", "medium", "low"):
+        assert new.render(reasoning_effort=e) == env.from_string(stock).render(reasoning_effort=e)
+    with pytest.raises(jinja2.TemplateError):
+        new.render(reasoning_effort="bogus")

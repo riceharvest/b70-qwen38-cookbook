@@ -8,6 +8,9 @@ prompt prefix on every turn, so the whole conversation after the system prompt m
 re-prefilled each turn (vLLM logs a warning saying exactly this). Rendering inline system messages in place keeps the
 prefix stable; conversations without inline system messages render byte-identically.
 
+Also maps the OpenAI-style reasoning_effort values the template rejects: 'high' -> 'xhigh', 'minimal' -> 'low'. The stock
+template only accepts xhigh/medium/low and returns HTTP 400 for 'high' (Hermes' default; seen in a Hermes request dump).
+
 usage: inline_system_template.py <model_dir> <out_path>   -> prints out_path, or nothing (exit 0) if not applicable
 """
 import json
@@ -27,6 +30,14 @@ NEW = """    {%- if message.role == "system" %}
         {%- endif %}
 """
 
+EFFORT_OLD = "{%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}\n"
+EFFORT_NEW = (
+    "{%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}\n"
+    "{#- B70: accept the OpenAI-style values clients send (Hermes defaults to 'high') instead of HTTP 400 #}\n"
+    "{%- if resolved_reasoning_effort == 'high' %}{%- set resolved_reasoning_effort = 'xhigh' %}\n"
+    "{%- elif resolved_reasoning_effort == 'minimal' %}{%- set resolved_reasoning_effort = 'low' %}{%- endif %}\n"
+)
+
 
 def main() -> int:
     model, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
@@ -36,10 +47,15 @@ def main() -> int:
     elif (model / "tokenizer_config.json").is_file():
         tpl = json.loads((model / "tokenizer_config.json").read_text()).get("chat_template")
         src = tpl if isinstance(tpl, str) else None
-    if not src or src.count(OLD) != 1:
-        print("[B70] inline-system chat template: anchor not found, keeping the model's template", file=sys.stderr)
+    if not src:
         return 0
-    out.write_text(src.replace(OLD, NEW, 1))
+    new = src.replace(OLD, NEW, 1) if src.count(OLD) == 1 else src
+    if src.count(EFFORT_OLD) == 1:
+        new = new.replace(EFFORT_OLD, EFFORT_NEW, 1)
+    if new == src:
+        print("[B70] chat template fixes: anchors not found, keeping the model's template", file=sys.stderr)
+        return 0
+    out.write_text(new)
     print(out)
     return 0
 
