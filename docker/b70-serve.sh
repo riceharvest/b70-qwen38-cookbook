@@ -9,8 +9,11 @@ MODEL=${MODEL:-darioooooo0o/Qwen3.8-27B-GPTQ-Int4-asym}; PORT=${PORT:-8000}
 if [ -d "$MODEL" ]; then DIR=$MODEL; else
   echo "[b70] downloading $MODEL to $HF_HOME (first run only)" >&2
   DIR=$(python -c "import sys; from huggingface_hub import snapshot_download as s; print(s(sys.argv[1]))" "$MODEL"); fi
-SPEC='{"method":"mtp","num_speculative_tokens":4,"draft_sample_method":"probabilistic"}'
-GRAPHS='{"cudagraph_capture_sizes":[1,2,4,5,8,10,15,20,25,30,35,40]}'
+# B70_MTP_K: MTP draft tokens per step (default 4); capture sizes follow k (batches up to --max-num-seqs 8)
+MTP_K=${B70_MTP_K:-4}; case "$MTP_K" in [1-9]) ;; *) echo "B70_MTP_K must be 1-9" >&2; exit 2 ;; esac
+CAPTURE=$(python -c "import sys; k=int(sys.argv[1]); print(','.join(map(str, sorted({1, 2, 4, 8} | {(k + 1) * n for n in range(1, 9)}))))" "$MTP_K")
+SPEC="{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP_K,\"draft_sample_method\":\"probabilistic\"}"
+GRAPHS="{\"cudagraph_capture_sizes\":[$CAPTURE]}"
 if [ "${FAST:-1}" = 1 ]; then FASTARGS=(--speculative-config "$SPEC" --compilation-config "$GRAPHS")
 else export VLLM_XPU_ENABLE_XPU_GRAPH=0; FASTARGS=(--enforce-eager); fi
 COMMON=(--port "$PORT" --distributed-executor-backend mp --quantization gptq --dtype float16 --kv-cache-dtype fp8
