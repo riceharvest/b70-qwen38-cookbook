@@ -40,7 +40,7 @@ docker run -d --name "$NAME" -p "$PORT:$PORT" --device /dev/dri -v /dev/dri:/dev
 set -e
 for p in patch_mtp_nightly patch_mtp_boundary patch_draft_lmhead_int4 patch_draft_mtp_int4 patch_gdn_mixed_split_v5 \
          patch_fix_accepted_sync patch_fix_backward_copy patch_fix_eagle_drop; do python /patches/sergiiob/$p.py; done
-for p in patch_embed_uva patch_draft_vocab patch_asym_gptq patch_target_lmhead_fp8 patch_spec_packed patch_moe_gemv patch_linear_fp8; do python /patches/b70/$p.py; done
+for p in patch_embed_uva patch_draft_vocab patch_asym_gptq patch_target_lmhead_fp8 patch_spec_packed patch_moe_gemv patch_linear_fp8 patch_gdn_spec_sync; do python /patches/b70/$p.py; done
 exec vllm serve /model --port $PORT --served-model-name qwen38 --distributed-executor-backend mp \
   --quantization gptq --dtype float16 --kv-cache-dtype fp8 --max-model-len 262144 --gpu-memory-utilization $GPU_UTIL \
   --max-num-seqs 8 --max-num-batched-tokens 8192 \

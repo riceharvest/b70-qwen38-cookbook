@@ -143,3 +143,24 @@ def test_fails_loudly_without_vllm(tmp_path, key):
     d, n = key.split("/")
     r = _run(PATCHES / d / f"{n}.py", sandbox)
     assert r.returncode != 0, f"{key} exited 0 on an empty tree:\n{(r.stdout + r.stderr)[-1000:]}"
+
+
+@needs_src
+def test_gdn_spec_sync_slices_pure_spec_branch(patched):
+    """patch_gdn_spec_sync: the pure MTP-decode branch slices instead of gathering with the host mask (each host-mask
+    gather of a device tensor is a blocking H2D copy = a full GPU queue drain); the mixed branch keeps its gathers."""
+    sandbox, _, _, _ = patched
+    rel = "vllm/v1/attention/backends/gdn_attn.py"
+    orig, new = (SRC / rel).read_text(), (sandbox / rel).read_text()
+    assert "B70_GDN_SPEC_NO_MASK_SYNC" in new
+    assert "B70_MTP_PARTIAL_FINAL_GROUP" in new  # applied on top of sergiiob/patch_mtp_boundary
+    pure = new[new.index("B70_GDN_SPEC_NO_MASK_SYNC"):]
+    pure = pure[:pure.index("            else:\n")]
+    assert "block_table_tensor[\n                        :num_spec_decodes, : self.num_spec + 1\n" in pure
+    assert "spec_sequence_masks_cpu" not in pure
+    assert "num_accepted_tokens = num_accepted_tokens[:num_spec_decodes]" in new
+    # the state-index gather is gone, num_accepted_tokens keeps its gather only on mixed steps, the rest is unchanged
+    gathers = lambda s: len(re.findall(r"\[\s*~?spec_sequence_masks_cpu\b", s)) + len(
+        re.findall(r"\[\s*non_spec_sequence_masks_cpu\b", s))
+    assert gathers(new) == gathers(orig) - 1, (gathers(orig), gathers(new))
+    compile(new, rel, "exec")

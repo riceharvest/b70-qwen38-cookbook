@@ -3,6 +3,17 @@
 What each release changed, measured on one Intel Arc Pro B70 (32 GB, stock 275 W), one request at a time, greedy,
 512-token answers. Details and methods are in the [README](README.md). Newest first.
 
+## image b70.5 (2026-10-16): MTP decode ~10% faster on the dense 27B (no GPU sync in the GDN metadata builder)
+
+Image `ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.5` (= `latest`), same kernels as b70.4. New
+`patches/b70/patch_gdn_spec_sync.py`, backported from vLLM main: on every MTP decode step the GDN metadata builder
+gathered two GPU tensors with a host bool mask, and each of those gathers is a blocking index copy that waits for all
+queued GPU work, so async scheduling lost its CPU/GPU overlap twice per step. The patch slices instead (same values).
+Qwen3.8-27B GPTQ-Int4-asym, MTP k=4, greedy, 512-token answers, same session, b70.4 -> b70.5: code 101.5 -> 111.9,
+json 110.9 -> 121.7, prose 60.0 -> 66.2, thinking 95.7 -> 107.0 tok/s (+10-12%), tokens per step unchanged
+(4.13 / 2.25 / 3.6). The 30-vs-14 canary scores 5/6 on both. A second A/B on the v3 launcher stack: single-stream
+93.3 -> 104.3 tok/s, ms per step 37.7 -> 33.8; 4 concurrent requests unchanged (230 tok/s).
+
 ## image b70.4 (2026-10-15): bf16 copies of the fp8 linears freed by default
 
 Image `ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.4` (= `latest`), no new kernels (same .so files as v3). The fp8
