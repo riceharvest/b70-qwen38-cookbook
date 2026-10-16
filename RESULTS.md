@@ -3,6 +3,31 @@
 What each release changed, measured on one Intel Arc Pro B70 (32 GB, stock 275 W), one request at a time, greedy,
 512-token answers. Details and methods are in the [README](README.md). Newest first.
 
+## image b70.6 (2026-10-16): faster long-context decode, correctness fixes, client compatibility
+
+Image `ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.6` (= `latest`), same kernels as b70.5. Interleaved A/B on the same
+box, Qwen3.8-27B GPTQ-Int4-asym (Orca), MTP k=4, greedy, 512-token answers, b70.5-equivalent -> b70.6:
+
+| ms per decode step | short prompt | 32K context | 64K context |
+|---|---|---|---|
+| b70.5 | 34.3 | 39.0 | 42.8 |
+| b70.6 | 33.2 | 37.7 | 40.3 (74 -> 78.6 tok/s) |
+
+Tokens per step and prefill unchanged. What changed:
+- MTP verify and draft attention under XPU graphs used the split count of a 262K-token context at every length. The
+  split count now follows a B70 sweep (`patch_xpu_graph_kv_splits.py`, `runtime/spec_packed.py`): verify attention at
+  65K 544 -> 475 us/layer, draft decode 353 -> 275 us/layer.
+- GDN steps that mix a prefill with MTP decodes no longer block on host-mask gathers (`patch_gdn_mixed_no_sync.py`).
+- Decode rows with 0 or fewer than k drafts stay on the GDN speculative path (`patch_gdn_zero_draft.py`, backport of
+  vLLM #56531 + #55504): before, such a row continued from a recurrent state up to k tokens old (silent wrong output).
+- First greedy request after start no longer compiles the rejection kernels (`patch_spec_greedy_warmup.py`, vLLM #59260).
+- Chat template (`runtime/inline_system_template.py`, applied at start): accepts `reasoning_effort` "high" (-> xhigh)
+  and "minimal" (-> low) instead of HTTP 400 (Hermes and other OpenAI clients send "high"), and renders non-leading
+  system messages in place so Claude Code's per-turn reminders on /v1/messages no longer break the prefix cache.
+- `--enable-prompt-tokens-details`: responses report cached prompt tokens.
+- Opt-in: `B70_MTP_K` (k=5 is +7-8% on short code/JSON but -4% at 64K), `B70_PREFIX_UNIT=128` (finer prefix-cache hits
+  for agent turns, not yet validated), `B70_EAGER_PAD_TOKENS` (no measured gain).
+
 ## image b70.5 (2026-10-16): MTP decode ~10% faster on the dense 27B (no GPU sync in the GDN metadata builder)
 
 Image `ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.5` (= `latest`), same kernels as b70.4. New
