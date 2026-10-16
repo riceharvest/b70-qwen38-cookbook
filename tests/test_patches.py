@@ -235,6 +235,11 @@ def test_spec_packed_graph_split_rule():
     assert rule(q, 4, 4, 30, 256) is None  # 64 WGs per split > 32 cores: keep the kernel heuristic
     assert rule(q, 1, 4, 6, 256) == 8  # q=1-like group: same as the vLLM-side rule
     assert rule(q, 1, 2, 24, 128) == 8  # head_dim 128, group 24 -> 16-row tiles -> 2 WGs per KV head
+    os.environ["B70_SPEC_Q32"] = "1"
+    try:
+        assert rule(q, 1, 4, 30, 256) == 8  # 32-row tile: one WG per KV head
+    finally:
+        del os.environ["B70_SPEC_Q32"]
     capturing["on"] = False
     assert rule(q, 1, 4, 30, 256) is None  # eager calls keep the heuristic
     capturing["on"] = True
@@ -243,3 +248,13 @@ def test_spec_packed_graph_split_rule():
         assert rule(q, 1, 4, 30, 256) is None
     finally:
         del os.environ["B70_GRAPH_KV_SPLITS"]
+
+
+@needs_src
+def test_spec_greedy_warmup_runs_second_pass(patched):
+    sandbox, _, _, _ = patched
+    w = (sandbox / "vllm/v1/worker/gpu/warmup.py").read_text()
+    assert "B70_SPEC_GREEDY_WARMUP" in w
+    assert "worker_sample_tokens, greedy=True" in w
+    assert "SamplingParams(temperature=0)" in w
+    compile(w, "warmup.py", "exec")

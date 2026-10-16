@@ -21,7 +21,7 @@ v0.31.0 switches paths in three places, all fixed here:
    `spec_token <= num_spec_decodes * (k + 1)`), so the step now stays speculative with the actual token count.
 
 Runs after sergiiob/patch_mtp_boundary.py and b70/patch_gdn_spec_sync.py (anchors on their text).
-Switch off with B70_GDN_ZERO_DRAFT=0 at runtime.
+Switch off with B70_GDN_ZERO_DRAFT=0 at runtime; B70_GDN_ZERO_DRAFT_LOG=1 logs how often 0-draft decode rows occur.
 """
 from __future__ import annotations
 
@@ -62,6 +62,12 @@ HYBRID_NEW = '''            num_draft_tokens_per_req = input_batch.num_draft_tok
                 num_decode_draft_tokens_np[: input_batch.num_reqs] = np.where(
                     is_decode, num_draft_tokens_per_req, -1
                 )
+                if _B70_ZERO_DRAFT_LOG:
+                    _b70_log_zero_draft_rows(
+                        is_decode,
+                        num_draft_tokens_per_req,
+                        self.vllm_config.num_speculative_tokens,
+                    )
             elif num_draft_tokens_per_req is not None:
                 # Test request state, not num_scheduled_tokens == draft_count+1:
                 # adaptive rewrites num_scheduled_tokens to an even split, so that
@@ -80,6 +86,28 @@ def _b70_zero_draft_on() -> bool:
     import os
 
     return os.environ.get("B70_GDN_ZERO_DRAFT", "1") != "0"
+
+
+# B70_GDN_ZERO_DRAFT_LOG=1: count decode rows with 0 drafts (host arrays only, no GPU reads); these are the rows the
+# unpatched code sent down the non-speculative GDN path.
+_B70_ZERO_DRAFT_LOG = __import__("os").environ.get("B70_GDN_ZERO_DRAFT_LOG") == "1"
+_b70_zero_draft_counts = [0, 0, 0]  # [steps with a short row, zero-draft rows, rows with 1..k-1 drafts]
+
+
+def _b70_log_zero_draft_rows(is_decode, num_draft_tokens_per_req, k) -> None:
+    n = int((is_decode & (num_draft_tokens_per_req == 0)).sum())
+    s = int((is_decode & (num_draft_tokens_per_req > 0) & (num_draft_tokens_per_req < k)).sum())
+    if n or s:
+        _b70_zero_draft_counts[0] += 1
+        _b70_zero_draft_counts[1] += n
+        _b70_zero_draft_counts[2] += s
+        if _b70_zero_draft_counts[0] & (_b70_zero_draft_counts[0] - 1) == 0:  # 1, 2, 4, 8, ...
+            print(
+                f"[B70] short-draft decode rows: steps={_b70_zero_draft_counts[0]} "
+                f"zero={_b70_zero_draft_counts[1]} short={_b70_zero_draft_counts[2]} (this step {n}/{s}, "
+                f"decode rows {int(is_decode.sum())})",
+                flush=True,
+            )
 
 
 '''

@@ -29,6 +29,8 @@ def _graph_splits(q, B, Hkv, rows, D):
             cores = 0
         _XE_CORES[dev] = cores
     tile = 8 if (rows <= 8 or D > 128) else 16
+    if os.environ.get("B70_SPEC_Q32") == "1" and D == 256 and rows <= 32:
+        tile = 32  # opt-in 32-row verify tile (fp16 Q + e4m3 KV build): one WG per KV head
     wgs = B * Hkv * ((rows + tile - 1) // tile)
     if cores <= 0 or wgs <= 0 or wgs > cores:
         return None
