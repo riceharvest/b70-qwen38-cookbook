@@ -9,9 +9,12 @@ _DBG = os.environ.get('B70_SPEC_DEBUG') == '1'; _seen = set()
 
 # B70_GRAPH_KV_SPLITS: under FULL XPU-graph capture max_seqlen_k is max_model_len, so the kernel's host heuristic picks
 # its long-context split count (B=1/2/4/8 -> 32/17/8/4 here) and every replay keeps it at any real context length.
-# Aim for one decode work-group per Xe core instead (hunt B09 sweep: best context-independent count for q=1 decode).
 # Packed verify rows: the head_dim-256 decode kernel tiles a KV head's ql*G query rows into 8-row work-groups
 # (16-row for head_dim <= 128 when the group exceeds 8), so a split costs B * Hkv * ceil(rows / tile) WGs.
+# Measured on the B70 (testq-drafts/031 sweep, fp8 KV, graph replay, Qwen3.8 shapes, ctx 2K-262K): the packed kernel is
+# fastest at ~8 WGs per Xe core (256 in total): B=1/2/4/8 -> 16/8/4/2 splits, faster than the heuristic at every point
+# (B=1: 65K 544->475 us, 131K 969->883, 262K 1894->1735, 8K 149->105). One WG per core (the q=1 rule) is up to 2x
+# SLOWER here (B=1 2 splits: 962 us at 65K).
 _XE_CORES = {}
 
 def _graph_splits(q, B, Hkv, rows, D):
@@ -32,9 +35,10 @@ def _graph_splits(q, B, Hkv, rows, D):
     if os.environ.get("B70_SPEC_Q32") == "1" and D == 256 and rows <= 32:
         tile = 32  # opt-in 32-row verify tile (fp16 Q + e4m3 KV build): one WG per KV head
     wgs = B * Hkv * ((rows + tile - 1) // tile)
-    if cores <= 0 or wgs <= 0 or wgs > cores:
+    target = 8 * cores
+    if cores <= 0 or wgs <= 0 or wgs >= target:
         return None
-    return min(32, cores // wgs)
+    return max(1, min(32, target // wgs))
 
 def _packed(q, k, v, out, cu_seqlens_q, seqused_k, block_table, max_seqlen_k, k_descale, v_descale,
             softmax_scale, s_aux, window_size, softcap):
