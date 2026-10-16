@@ -9,12 +9,13 @@ Every step larger than the biggest graph capture size runs eager with M = prefil
 prompt length (its final chunk) or a new mix of prefill + decoding streams almost always hits a cold M: TTFT grows and
 every concurrent stream stalls for that step. Past ~512/6 distinct M the LRU churns and it never warms up.
 
-Padding the step to a multiple of B70_EAGER_PAD_TOKENS (default 128) bounds the distinct M to 8192/128 = 64 per
+Padding the step to a multiple of B70_EAGER_PAD_TOKENS (default 128) (opt-in, e.g. 128) bounds the distinct M to 8192/128 = 64 per
 shape (384 entries for 6 shapes, under the LRU size). The V2 runner already pads graph batches this way: the extra
 rows get PAD_SLOT_ID slot mappings (no KV writes) and attention/GDN metadata use the real token count; logits only
 read real rows. Cost: <= 127 padded rows per eager step (<2% of an 8K-token prefill step, more on short prompts).
 The rounded count never exceeds max_num_batched_tokens (the input buffer size). Torch's own oneDNN matmuls for the
-bf16/fp16 linears get the same bucketing. B70_EAGER_PAD_TOKENS=0 switches it off.
+bf16/fp16 linears get the same bucketing. Default OFF: the 2026-10-16 serving A/B showed no TTFT change at 1K/8K/32K
+(distinct prompt lengths per request), so cold primitives cost less in practice than the microbench suggested.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ IMPORT_OLD = "from dataclasses import replace\n"
 IMPORT_NEW = '''from dataclasses import replace
 
 # B70_EAGER_PAD_TOKENS: bucket for the token count of eager steps (0/1 = off)
-_B70_EAGER_PAD = int(__import__("os").environ.get("B70_EAGER_PAD_TOKENS", "128") or 0)
+_B70_EAGER_PAD = int(__import__("os").environ.get("B70_EAGER_PAD_TOKENS", "0") or 0)
 '''
 
 PAD_ANCHOR = '''        if batch_desc.num_tokens == 0:
