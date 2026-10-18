@@ -12,21 +12,23 @@ attention kernel and the MoE GEMV carry over unchanged. Three patches are gone b
 `patch_gdn_mixed_no_sync` now also covers the GDN state-index re-gather of the 2nd and 3rd GDN KV-cache groups
 (`update_block_table`), which still synced 4 times per mixed prefill + MTP step on v0.31.
 
-Same box, same config as the b70.5 image test (Qwen3.8-27B GPTQ-Int4-asym (Orca), MTP k=4, greedy, 512-token answers,
-`GPU_UTIL=0.75`, 64K context), b70.6 numbers from the 2026-10-16 A/B:
+Qwen3.8-27B GPTQ-Int4-asym (Orca), MTP k=4, greedy, 512-token answers. b70.7 ran with the b70.5 image-test config
+(`GPU_UTIL=0.75`, 64K context); the b70.6 row is from its 2026-10-16 A/B (`GPU_UTIL=0.80`, 131K context):
 
-| | code | json | prose | thinking | 32K context |
+| tok/s (tok/step) | code | json | prose | thinking | 32K context |
 |---|---|---|---|---|---|
-| b70.6 tok/s (tok/step) | 113.6 (3.76) | 124.8 (4.13) | 69.2 (2.29) | 107.9 (3.58) | 36.8-39.0 ms/step |
-| b70.7 tok/s (tok/step) | 114.2 (3.76) | 127.4 (4.20) | 69.3 (2.29) | 110.0 (3.63) | 36.7 ms/step |
+| b70.5, 0.75 / 64K | 111.9 (3.79) | 121.7 (4.13) | 66.2 (2.25) | 107.0 (3.63) | |
+| b70.6, 0.80 / 131K | 113.6 (3.76) | 124.8 (4.13) | 69.2 (2.29) | 107.9 (3.58) | 36.8-39.0 ms/step |
+| b70.7, 0.75 / 64K | 114.2 (3.76) | 127.4 (4.20) | 69.3 (2.29) | 110.0 (3.63) | 36.7 ms/step |
 
-- KV pool at the same `GPU_UTIL`: 126,552 -> 135,591 tokens (+7%); weights 13.57 -> 13.48 GiB.
-- 30-vs-14 canary: thinking off 5/6 (same as b70.5), thinking on 12/12; no `!!!!` output.
+- KV pool at `GPU_UTIL=0.75`, 64K: 126,552 (b70.5) -> 135,591 tokens (+7%); weights 13.57 -> 13.48 GiB.
+- 30-vs-14 canary: thinking off 5/6 (same as b70.5), thinking on 12/12; no `!!!!` output. Both 27B and 35B runs had
+  mixed prefill + MTP steps after startup (48 / 30 logged), all outputs correct.
 - Qwen3.6-35B-A3B (palmfuture GPTQ-Int4, `--language-model-only`, 16K, `GPU_UTIL=0.80`): MTP4 decode 264.2 / 177.9
-  tok/s code / prose (b70.3 session: 243.7 / 164.4; different day, the box drifts 5-10%), prefill 4K / 15K 10.2K / 9.2K
-  tok/s (unchanged), KV pool 76,878 tokens, 0/16 corrupted outputs in 8-concurrent thinking-length chats, thinking on
-  12/12. Thinking off 4/6: both `sum(i*i for i in range(4))` phrasings answer 30, the known symmetric-int4 failure
-  ([SergiioB](https://github.com/SergiioB/intel-arc-pro-b70-inference-cookbook)); not compared against b70.6 yet.
+  tok/s code / prose (b70.3 session at `GPU_UTIL=0.82`: 243.7 / 164.4; different day, the box drifts 5-10%), prefill
+  4K / 15K 10.2K / 9.2K tok/s (unchanged), KV pool 76,878 tokens, 0/16 corrupted outputs in 8-concurrent
+  thinking-length chats, thinking on 12/12. Thinking off 4/6: both `sum(i*i for i in range(4))` phrasings answer 30.
+  There is no earlier thinking-off result for this model, so whether b70.6 does the same is still open.
 
 ## image b70.6 (2026-10-16): faster long-context decode, correctness fixes, client compatibility
 
