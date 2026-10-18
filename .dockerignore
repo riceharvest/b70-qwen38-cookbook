@@ -1,5 +1,7 @@
 *
-!patches
+!build/overlay/site-packages
+!build/overlay/removed.txt
+!build/overlay/REFS
 !runtime
 !docker
 !kernels/libattn_kernels_xe_2.b70.so

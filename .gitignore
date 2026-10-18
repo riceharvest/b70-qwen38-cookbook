@@ -3,3 +3,4 @@ kernels/work/
 __pycache__/
 bench/corpus.txt
 kernels/b70_moe_gemv.so
+build/

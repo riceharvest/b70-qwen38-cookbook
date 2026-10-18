@@ -1,8 +1,9 @@
-"""CPU-only tests for the patch scripts in patches/: they apply cleanly, in the Dockerfile's order, to the vLLM sources of
-the pinned base image, a second run changes nothing, and every patched file still compiles.
+"""CPU-only tests for the B70 overlay (docker/overlay.sh: the files the riceharvest/vllm and vllm-xpu-kernels fork
+branches in docker/fork.env change): the base image's files are exactly the fork base's, so copying the fork's files
+over them reverts nothing; the overlaid files compile; the Dockerfile and serve.sh both apply it.
 
-The sources come from tests/fetch_vllm_src.sh (default ~/.cache/b70-cookbook-tests/<hash of the FROM line>/site-packages,
-or $B70_VLLM_SRC). Without them only the static checks run. Run: python -m pytest tests -q
+The image sources come from tests/fetch_vllm_src.sh (default ~/.cache/b70-cookbook-tests/<hash of the FROM line>/
+site-packages, or $B70_VLLM_SRC). Without them only the static checks run. Run: python -m pytest tests -q
 """
 import hashlib
 import os
@@ -15,8 +16,6 @@ import sys
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-PATCHES = REPO / "patches"
-SITE = "/opt/venv/lib/python3.12/site-packages"
 
 
 def _base_image():
@@ -32,123 +31,74 @@ HAVE_SRC = (SRC / "vllm" / "__init__.py").is_file() and (SRC / "vllm_xpu_kernels
 needs_src = pytest.mark.skipif(not HAVE_SRC, reason=f"no vLLM sources at {SRC} (run tests/fetch_vllm_src.sh)")
 
 
-def dockerfile_order():
-    """[(dir, name), ...] in the order the Dockerfile's RUN applies them."""
-    text = (REPO / "docker" / "Dockerfile").read_text().replace("\\\n", " ")
-    order = []
-    for loop in re.finditer(r"for p in ([\w ]+); do python /b70/patches/(\w+)/\$p\.py", text):
-        order += [(loop.group(2), name) for name in loop.group(1).split()]
-    return order
-
-
-ORDER = dockerfile_order()
-
-
-def test_dockerfile_lists_every_patch_once():
-    on_disk = sorted((p.parent.name, p.stem) for p in PATCHES.glob("*/patch_*.py"))
-    assert len(ORDER) == len(set(ORDER)), "a patch is applied twice"
-    assert sorted(ORDER) == on_disk
-
-
-@pytest.mark.parametrize("script", sorted(PATCHES.glob("*/patch_*.py")), ids=lambda p: f"{p.parent.name}/{p.name}")
-def test_script_compiles(script):
-    compile(script.read_text(), str(script), "exec")
-
-
-def _tree_hashes(root):
-    return {p.relative_to(root): hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob("*.py")}
-
-
-def _run(script, sandbox):
-    """Run one patch script against the sandbox: its hard-coded site-packages path is rewritten to the sandbox, and
-    `import vllm` (in-process or in a child python) finds the sandbox's stubbed vllm package."""
-    text = script.read_text().replace(SITE, str(sandbox))
-    tmp = sandbox.parent / "scripts" / script.parent.name / script.name
-    tmp.parent.mkdir(parents=True, exist_ok=True)
-    tmp.write_text(text)
-    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": str(sandbox), "PYTHONDONTWRITEBYTECODE": "1",
-           "B70_VLLM_ROOTS": str(sandbox / "vllm")}
-    return subprocess.run([sys.executable, "-s", str(tmp)], cwd=sandbox.parent, env=env, capture_output=True, text=True,
-                          timeout=300)
+def _fork_env():
+    return dict(re.findall(r"^(\w+)=(\S+)", (REPO / "docker" / "fork.env").read_text(), re.M))
 
 
 @pytest.fixture(scope="module")
-def patched(tmp_path_factory):
-    """A copy of the image's sources with every patch applied once, plus the first-run outputs and pre-patch hashes."""
-    base = tmp_path_factory.mktemp("b70patch")
-    sandbox = base / "site-packages"
+def overlay(tmp_path_factory):
+    """docker/overlay.sh output: site-packages/ (fork files), base/ (same files at the fork base), removed.txt."""
+    dest = tmp_path_factory.mktemp("b70overlay") / "overlay"
+    subprocess.run([str(REPO / "docker" / "overlay.sh"), str(dest)], check=True, capture_output=True, timeout=600)
+    return dest
+
+
+@pytest.fixture(scope="module")
+def overlaid(overlay, tmp_path_factory):
+    """A copy of the image's sources with the overlay applied, as the Dockerfile does."""
+    if not HAVE_SRC:
+        pytest.skip(f"no vLLM sources at {SRC}")
+    sandbox = tmp_path_factory.mktemp("b70src") / "site-packages"
     shutil.copytree(SRC, sandbox)
-    # the real vllm/__init__.py imports torch; the scripts only need vllm.__file__ / find_spec to locate the tree
-    (sandbox / "vllm" / "__init__.py").write_text("# test stub\n")
-    before = _tree_hashes(sandbox)
-    runs, touched = {}, {}
-    for d, n in ORDER:
-        h0 = _tree_hashes(sandbox)
-        runs[f"{d}/{n}"] = _run(PATCHES / d / f"{n}.py", sandbox)
-        h1 = _tree_hashes(sandbox)
-        touched[f"{d}/{n}"] = [p for p in h1 if h0.get(p) != h1[p]]
-    return sandbox, before, runs, touched
+    shutil.copytree(overlay / "site-packages", sandbox, dirs_exist_ok=True)
+    for rel in (overlay / "removed.txt").read_text().split():
+        (sandbox / rel).unlink()
+    return sandbox
+
+
+def test_overlay_is_the_pinned_refs(overlay):
+    env = _fork_env()
+    assert (overlay / "REFS").read_text().split() == ["vllm", env["VLLM_REF"], "vllm_xpu_kernels", env["XK_REF"]]
+    files = sorted(p.relative_to(overlay / "site-packages").parts[0] for p in (overlay / "site-packages").rglob("*.py"))
+    assert "vllm" in files and "vllm_xpu_kernels" in files
 
 
 @needs_src
-@pytest.mark.parametrize("key", [f"{d}/{n}" for d, n in ORDER])
-def test_patch_applies(patched, key):
-    _, _, runs, touched = patched
-    r = runs[key]
-    assert r.returncode == 0, f"{key} rc={r.returncode}\nstdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}"
-    assert touched[key], f"{key} exited 0 but changed no file:\n{r.stdout[-1000:]}"
+def test_image_matches_fork_base(overlay):
+    """The overlay replaces whole files, so each must be byte-identical in the image and at the fork base; otherwise the
+    overlay would silently revert what the image build changed. A vLLM bump with a mismatched base fails here."""
+    base = overlay / "base"
+    differ = [str(p.relative_to(base)) for p in base.rglob("*.py")
+              if (SRC / p.relative_to(base)).read_bytes() != p.read_bytes()]
+    assert not differ, f"image files differ from the fork base: {differ}"
+    added = [p.relative_to(overlay / "site-packages") for p in (overlay / "site-packages").rglob("*.py")
+             if not (base / p.relative_to(overlay / "site-packages")).exists()]
+    clash = [str(p) for p in added if (SRC / p).exists()]
+    assert not clash, f"files the fork adds already exist in the image: {clash}"
 
 
-@needs_src
-def test_patched_files_compile(patched):
-    sandbox, before, _, _ = patched
-    after = _tree_hashes(sandbox)
+def test_overlaid_files_compile(overlay):
     bad = []
-    for rel in (p for p in after if before.get(p) != after[p]):
+    for p in (overlay / "site-packages").rglob("*.py"):
         try:
-            compile((sandbox / rel).read_text(), str(rel), "exec")
+            compile(p.read_text(), str(p), "exec")
         except SyntaxError as e:
-            bad.append(f"{rel}: {e}")
+            bad.append(f"{p}: {e}")
     assert not bad, "\n".join(bad)
 
 
-@needs_src
-def test_second_run_is_a_noop(patched):
-    sandbox, _, _, _ = patched
-    first = _tree_hashes(sandbox)
-    failed = []
-    for d, n in ORDER:
-        r = _run(PATCHES / d / f"{n}.py", sandbox)
-        if r.returncode != 0:
-            failed.append(f"{d}/{n} rc={r.returncode}: {(r.stdout + r.stderr)[-500:]}")
-    assert not failed, "\n".join(failed)
-    second = _tree_hashes(sandbox)
-    assert first == second, f"changed on the second run: {sorted(str(p) for p in second if first.get(p) != second[p])}"
-
-
-# Scripts that exit 0 on purpose when their target is missing (SergiioB's accept-sync: the patched path is not used in
-# this image's config, so it warns instead of failing the build).
-WARN_ONLY = {"sergiiob/patch_fix_accepted_sync"}
-
-
-@pytest.mark.parametrize("key", [f"{d}/{n}" for d, n in ORDER])
-def test_fails_loudly_without_vllm(tmp_path, key):
-    """A vLLM bump that moves or renames a target must break the image build, not ship it unpatched."""
-    if key in WARN_ONLY:
-        pytest.skip("warns by design")
-    sandbox = tmp_path / "site-packages"
-    (sandbox / "vllm").mkdir(parents=True)
-    (sandbox / "vllm_xpu_kernels").mkdir()
-    (sandbox / "vllm" / "__init__.py").write_text("# test stub\n")
-    d, n = key.split("/")
-    r = _run(PATCHES / d / f"{n}.py", sandbox)
-    assert r.returncode != 0, f"{key} exited 0 on an empty tree:\n{(r.stdout + r.stderr)[-1000:]}"
+def test_dockerfile_and_serve_apply_overlay():
+    docker = (REPO / "docker" / "Dockerfile").read_text()
+    serve = (REPO / "serve.sh").read_text()
+    assert "COPY build/overlay/site-packages/ /opt/venv/lib/python3.12/site-packages/" in docker
+    assert "build/overlay/removed.txt" in docker
+    assert "docker/overlay.sh" in serve and "/b70/overlay/site-packages/." in serve and "/b70/overlay/removed.txt" in serve
 
 
 @needs_src
 def test_base_covers_dropped_gdn_patches():
     """vLLM v0.32 ships what patch_gdn_spec_sync, patch_gdn_zero_draft and sergiiob/patch_mtp_boundary did on v0.31
-    (#56531, #55504 + the pure-spec slicing), so those patches were dropped. A base image without them must not ship."""
+    (#56531, #55504 + the pure-spec slicing), so they are not on the fork branch. A base image without them must not ship."""
     hybrid = (SRC / "vllm/v1/worker/gpu/model_states/mamba_hybrid.py").read_text()
     gdn = (SRC / "vllm/v1/attention/backends/gdn_attn.py").read_text()
     # zero-draft decode rows stay speculative, width bound k+1 (#56531 + #55504)
@@ -165,10 +115,10 @@ def test_base_covers_dropped_gdn_patches():
 
 
 @needs_src
-def test_gdn_mixed_no_sync_uses_index_select(patched):
-    """patch_gdn_mixed_no_sync: the mixed step gathers with device row indices from one async copy; the host-mask
+def test_gdn_mixed_no_sync_uses_index_select(overlaid):
+    """[B70] patch_gdn_mixed_no_sync: the mixed step gathers with device row indices from one async copy; the host-mask
     gathers survive only in the B70_GDN_MIXED_NO_SYNC=0 branch."""
-    sandbox, _, _, _ = patched
+    sandbox = overlaid
     gdn = (sandbox / "vllm/v1/attention/backends/gdn_attn.py").read_text()
     assert "B70_GDN_MIXED_NO_SYNC" in gdn
     assert len(re.findall(r"index_select\(\s*0, _b70_spec_rows\s*\)", gdn)) == 2  # state indices + num_accepted
@@ -188,8 +138,8 @@ def test_gdn_mixed_no_sync_uses_index_select(patched):
 
 
 @needs_src
-def test_xpu_graph_kv_splits_passes_num_splits(patched):
-    sandbox, _, _, _ = patched
+def test_xpu_graph_kv_splits_passes_num_splits(overlaid):
+    sandbox = overlaid
     ops = (sandbox / "vllm/_xpu_ops.py").read_text()
     assert "def _b70_graph_decode_num_kv_splits(" in ops
     assert ops.count("**extra_kwargs,") >= 1
@@ -233,8 +183,8 @@ def test_spec_packed_graph_split_rule():
 
 
 @needs_src
-def test_spec_greedy_warmup_runs_second_pass(patched):
-    sandbox, _, _, _ = patched
+def test_spec_greedy_warmup_runs_second_pass(overlaid):
+    sandbox = overlaid
     w = (sandbox / "vllm/v1/worker/gpu/warmup.py").read_text()
     assert "B70_SPEC_GREEDY_WARMUP" in w
     assert "worker_sample_tokens, greedy=True" in w
@@ -243,8 +193,8 @@ def test_spec_greedy_warmup_runs_second_pass(patched):
 
 
 @needs_src
-def test_eager_token_pad_buckets_none_mode(patched):
-    sandbox, _, _, _ = patched
+def test_eager_token_pad_buckets_none_mode(overlaid):
+    sandbox = overlaid
     r = (sandbox / "vllm/v1/worker/gpu/model_runner.py").read_text()
     assert "_B70_EAGER_PAD = int(" in r
     block = r[r.index("# B70_EAGER_PAD_TOKENS: bucket eager"):]

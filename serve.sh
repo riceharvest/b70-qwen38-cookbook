@@ -9,6 +9,7 @@
 #   concurrent requests, see README "Many users at once")
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+"$HERE/docker/overlay.sh" "$HERE/build/overlay" >/dev/null   # the B70 fork changes (docker/fork.env), copied over the stock image below
 MODEL_DIR=${MODEL_DIR:?set MODEL_DIR to the downloaded model directory}
 PORT=${PORT:-8000}; NAME=${NAME:-b70-qwen38}; GPU_UTIL=${GPU_UTIL:-0.93}
 IMG=vllm/vllm-openai-xpu:v0.32.0@sha256:20509fabe50dda62c09c0786d1a6effa299d3dbdddcc49331b93e65144652a8c
@@ -36,7 +37,7 @@ MTP_K=${B70_MTP_K:-4}; case "$MTP_K" in [1-9]) ;; *) echo "B70_MTP_K must be 1-9
 CAPTURE=$(python3 -c "import sys; k=int(sys.argv[1]); print(','.join(map(str, sorted({1, 2, 4, 8} | {(k + 1) * n for n in range(1, 9)}))))" "$MTP_K")
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" -p "$PORT:$PORT" --device /dev/dri -v /dev/dri:/dev/dri:ro --shm-size 8g \
-  -v "$MODEL_DIR:/model:ro" -v "$HERE/patches:/patches:ro" -v "$HERE/runtime:/opt/b70:ro" "${KMOUNT[@]}" "${MOEMOUNT[@]}" \
+  -v "$MODEL_DIR:/model:ro" -v "$HERE/build/overlay:/b70/overlay:ro" -v "$HERE/runtime:/opt/b70:ro" "${KMOUNT[@]}" "${MOEMOUNT[@]}" \
   -e PYTORCH_ALLOC_CONF=expandable_segments:True -e VLLM_TARGET_DEVICE=xpu -e ZE_FLAT_DEVICE_HIERARCHY=COMPOSITE \
   -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK:-0} -e CCL_ATL_TRANSPORT=mpi -e CCL_PROCESS_LAUNCHER=none \
   -e B70_MTP_BF16_DRAFT=1 -e B70_DRAFT_LMHEAD_INT4=1 -e B70_DRAFT_MTP_INT4=1 -e VLLM_XPU_ENABLE_XPU_GRAPH=1 \
@@ -45,9 +46,7 @@ docker run -d --name "$NAME" -p "$PORT:$PORT" --device /dev/dri -v /dev/dri:/dev
   -e PORT=$PORT -e GPU_UTIL=$GPU_UTIL -e "B70_GDN_ARGS=$GDN_ARGS" -e MTP_K=$MTP_K -e CAPTURE=$CAPTURE -e "PREFIX_ARGS=$PREFIX_ARGS" \
   --entrypoint bash $IMG -lc '
 set -e
-for p in patch_mtp_nightly patch_draft_lmhead_int4 patch_draft_mtp_int4 patch_gdn_mixed_split_v5 \
-         patch_fix_accepted_sync patch_fix_backward_copy patch_fix_eagle_drop; do python /patches/sergiiob/$p.py; done
-for p in patch_embed_uva patch_draft_vocab patch_asym_gptq patch_target_lmhead_fp8 patch_spec_packed patch_moe_gemv patch_linear_fp8 patch_gdn_mixed_no_sync patch_xpu_graph_kv_splits patch_spec_greedy_warmup patch_eager_token_pad; do python /patches/b70/$p.py; done
+SP=/opt/venv/lib/python3.12/site-packages; cp -r /b70/overlay/site-packages/. $SP/; (cd $SP && xargs -r rm -- < /b70/overlay/removed.txt)
 CT=$(python /opt/b70/inline_system_template.py /model /tmp/chat_template_b70.jinja)  # Claude Code /v1/messages: keep the prefix cache
 exec vllm serve /model ${CT:+--chat-template $CT} --port $PORT --served-model-name qwen38 --distributed-executor-backend mp \
   --quantization gptq --dtype float16 --kv-cache-dtype fp8 --max-model-len 262144 --gpu-memory-utilization $GPU_UTIL \
