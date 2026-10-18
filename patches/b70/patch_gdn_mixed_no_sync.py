@@ -10,6 +10,8 @@ Every mixed step therefore loses the async-scheduling CPU/GPU overlap.
 
 Build the spec / non-spec row indices and both cumulative query lengths on the host (the query lens are already
 there), send them in ONE async pinned H2D copy and gather with index_select. Same values, order, dtype and contiguity.
+The indices ride along in the metadata, so update_block_table() of the other GDN KV-cache groups (Qwen3.8-27B: 3 groups)
+gathers with them too instead of the host masks (missed on v0.31: 4 more syncs per mixed step).
 Backport of riceharvest/vllm hunt-gdn-meta-no-mask-sync (1a9e005) to the v0.32.0 text.
 Switch off with B70_GDN_MIXED_NO_SYNC=0.
 """
@@ -171,6 +173,46 @@ HIS_NEW = '''                if _b70_non_spec_rows is not None:
                     has_initial_state = has_initial_state[~spec_sequence_masks_cpu]
 '''
 
+# the other GDN KV-cache groups (Qwen3.8-27B: 48 GDN layers in 3 groups of 16) re-gather their state indices from the
+# first group's metadata in update_block_table(); its mixed branch gathers with the host masks again (2 syncs per group)
+FIELDS_OLD = '''    checkpoint: MambaPrefillCheckpointMetadata | None = None
+    has_initial_state: torch.Tensor | None = None
+'''
+FIELDS_NEW = '''    checkpoint: MambaPrefillCheckpointMetadata | None = None
+    has_initial_state: torch.Tensor | None = None
+    # B70_GDN_MIXED_NO_SYNC: device row indices of a mixed step's spec / non-spec
+    # rows, for update_block_table() of the other GDN KV-cache groups.
+    b70_spec_rows: torch.Tensor | None = None
+    b70_non_spec_rows: torch.Tensor | None = None
+'''
+
+CTOR_OLD = '''            checkpoint=checkpoint,
+            has_initial_state=has_initial_state,
+'''
+CTOR_NEW = '''            checkpoint=checkpoint,
+            has_initial_state=has_initial_state,
+            b70_spec_rows=_b70_spec_rows,
+            b70_non_spec_rows=_b70_non_spec_rows,
+'''
+
+REGATHER_OLD = '''        else:
+            spec_indices = blk_table[masks, : self.num_spec + 1]
+            non_spec_indices = prefill_indices = blk_table[~masks, 0]
+'''
+REGATHER_NEW = '''        elif m.b70_spec_rows is not None and m.b70_non_spec_rows is not None:
+            # B70_GDN_MIXED_NO_SYNC: the device row indices build() sent, no
+            # host-mask gather (= blocking H2D index copy) per extra group.
+            spec_indices = blk_table[:, : self.num_spec + 1].index_select(
+                0, m.b70_spec_rows
+            )
+            non_spec_indices = prefill_indices = blk_table[:, 0].index_select(
+                0, m.b70_non_spec_rows
+            )
+        else:
+            spec_indices = blk_table[masks, : self.num_spec + 1]
+            non_spec_indices = prefill_indices = blk_table[~masks, 0]
+'''
+
 
 def patch_text(text: str) -> str:
     if MARKER in text:
@@ -178,11 +220,15 @@ def patch_text(text: str) -> str:
     if "num_accepted_tokens = num_accepted_tokens[:num_spec_decodes]" not in text:
         raise RuntimeError("gdn_attn.py lacks the pure-spec slicing of vLLM v0.32 (#56531 era); refusing")
     for old, what in ((INIT_OLD, "spec mask init"), (MIXED_OLD, "mixed-step gathers"),
-                      (ACC_OLD, "num_accepted_tokens gather"), (HIS_OLD, "has_initial_state gather")):
+                      (ACC_OLD, "num_accepted_tokens gather"), (HIS_OLD, "has_initial_state gather"),
+                      (FIELDS_OLD, "metadata fields"), (CTOR_OLD, "metadata constructor"),
+                      (REGATHER_OLD, "update_block_table mixed gathers")):
         if text.count(old) != 1:
             raise RuntimeError(f"GDN {what} anchor changed or missing; refusing")
     text = text.replace(INIT_OLD, INIT_NEW, 1).replace(MIXED_OLD, MIXED_NEW, 1)
     text = text.replace(ACC_OLD, ACC_NEW, 1).replace(HIS_OLD, HIS_NEW, 1)
+    text = text.replace(FIELDS_OLD, FIELDS_NEW, 1).replace(CTOR_OLD, CTOR_NEW, 1)
+    text = text.replace(REGATHER_OLD, REGATHER_NEW, 1)
     if "\nimport os\n" not in text:
         if text.count("\nimport torch\n") != 1:
             raise RuntimeError("gdn_attn imports anchor changed; refusing")

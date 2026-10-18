@@ -173,6 +173,12 @@ def test_gdn_mixed_no_sync_uses_index_select(patched):
     assert "B70_GDN_MIXED_NO_SYNC" in gdn
     assert len(re.findall(r"index_select\(\s*0, _b70_spec_rows\s*\)", gdn)) == 2  # state indices + num_accepted
     assert len(re.findall(r"index_select\(\s*0, _b70_non_spec_rows\s*\)", gdn)) == 2  # state indices + has_initial
+    # the other GDN KV-cache groups re-gather with the same device rows (update_block_table)
+    assert "b70_spec_rows=_b70_spec_rows," in gdn and "b70_non_spec_rows=_b70_non_spec_rows," in gdn
+    regather = gdn[gdn.index("def update_block_table("):]
+    regather = regather[:regather.index("\n    def ", 10)]
+    assert re.search(r"index_select\(\s*0, m\.b70_spec_rows\s*\)", regather)
+    assert re.search(r"index_select\(\s*0, m\.b70_non_spec_rows\s*\)", regather)
     assert "_b70_packed = async_tensor_h2d(" in gdn
     on = gdn[gdn.index('if os.environ.get("B70_GDN_MIXED_NO_SYNC", "1") != "0":'):]
     on = on[:on.index("                else:\n")]
