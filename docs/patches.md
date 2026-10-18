@@ -11,6 +11,7 @@ stock image. Each commit is named after the patch script it replaced (`[B70] pat
 its `B70_*` switch turns it on. To work on one: edit on the branch, push, bump the SHA in `docker/fork.env`.
 New vLLM release: `git rebase --onto vX.Y.Z v0.32.0` into a new branch `b70/vX.Y`, bump the base and ref, and run the
 tests (`tests/test_overlay.py` fails if the image's files differ from the fork base).
+The earlier patch scripts for vLLM XPU v0.31.0 (image b70.6) are at tag `b70.6`.
 
 | Change | What it does |
 |---|---|
