@@ -3,4 +3,5 @@ at commit `1a76136ea1b3f96bba3b20e42041a6fcc95f56fd` (`patches/`), MIT License (
 
 They add MTP spec decode fixes for Qwen3.8 on vLLM XPU v0.31.0 (nightly MTP, boundary handling), int4 draft MTP layer and draft lm_head,
 the GDN mixed-batch split, and three prefix-cache x MTP correctness fixes (accepted_sync, backward_copy, eagle_drop).
-Apply them in the order listed in `serve.sh`.
+Apply them in the order listed in `serve.sh`. `patch_mtp_boundary.py` (boundary handling) is not carried on the v0.32.0
+base: v0.32 keeps a partial final speculative group on the speculative path itself (see `../b70/README.md`).

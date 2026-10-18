@@ -5,7 +5,9 @@
 stock kernels. That still works, just slower.
 
 It's built from vllm-xpu-kernels `release/0.1.15.4` + sycl-tla `87f68506` (what the pinned `vllm/vllm-openai-xpu:v0.31.0`
-image ships) plus two patches. **It only fits that image.** If you change the image, drop the mount or rebuild.
+image ships) plus two patches. **It only fits that kernel build.** `vllm/vllm-openai-xpu:v0.32.0` ships the same vllm-xpu-kernels
+0.1.15.4 and torch 2.14 (byte-identical `.so` files), so the same `.so` serves both. If you change the image, check that
+first, or drop the mount, or rebuild.
 
 | Patch | What it does | Effect on a B70 |
 |---|---|---|

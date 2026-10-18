@@ -11,7 +11,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 MODEL_DIR=${MODEL_DIR:?set MODEL_DIR to the downloaded model directory}
 PORT=${PORT:-8000}; NAME=${NAME:-b70-qwen38}; GPU_UTIL=${GPU_UTIL:-0.93}
-IMG=vllm/vllm-openai-xpu:v0.31.0@sha256:95ac815038c4b3537b173798bfe3b89bdf525a52bd653cd14d4deb01f1062be7
+IMG=vllm/vllm-openai-xpu:v0.32.0@sha256:20509fabe50dda62c09c0786d1a6effa299d3dbdddcc49331b93e65144652a8c
 SO=/opt/venv/lib/python3.12/site-packages/vllm_xpu_kernels/libattn_kernels_xe_2.so
 SO_FILE=${SO_FILE:-$HERE/kernels/libattn_kernels_xe_2.b70.so}
 # packed MTP verify needs the v2 kernel (zero-sum guard); the v1 .so corrupts some outputs ("!!!!") with it on
@@ -45,9 +45,9 @@ docker run -d --name "$NAME" -p "$PORT:$PORT" --device /dev/dri -v /dev/dri:/dev
   -e PORT=$PORT -e GPU_UTIL=$GPU_UTIL -e "B70_GDN_ARGS=$GDN_ARGS" -e MTP_K=$MTP_K -e CAPTURE=$CAPTURE -e "PREFIX_ARGS=$PREFIX_ARGS" \
   --entrypoint bash $IMG -lc '
 set -e
-for p in patch_mtp_nightly patch_mtp_boundary patch_draft_lmhead_int4 patch_draft_mtp_int4 patch_gdn_mixed_split_v5 \
+for p in patch_mtp_nightly patch_draft_lmhead_int4 patch_draft_mtp_int4 patch_gdn_mixed_split_v5 \
          patch_fix_accepted_sync patch_fix_backward_copy patch_fix_eagle_drop; do python /patches/sergiiob/$p.py; done
-for p in patch_embed_uva patch_draft_vocab patch_asym_gptq patch_target_lmhead_fp8 patch_spec_packed patch_moe_gemv patch_linear_fp8 patch_gdn_spec_sync patch_gdn_zero_draft patch_gdn_mixed_no_sync patch_xpu_graph_kv_splits patch_spec_greedy_warmup patch_eager_token_pad; do python /patches/b70/$p.py; done
+for p in patch_embed_uva patch_draft_vocab patch_asym_gptq patch_target_lmhead_fp8 patch_spec_packed patch_moe_gemv patch_linear_fp8 patch_gdn_mixed_no_sync patch_xpu_graph_kv_splits patch_spec_greedy_warmup patch_eager_token_pad; do python /patches/b70/$p.py; done
 CT=$(python /opt/b70/inline_system_template.py /model /tmp/chat_template_b70.jinja)  # Claude Code /v1/messages: keep the prefix cache
 exec vllm serve /model ${CT:+--chat-template $CT} --port $PORT --served-model-name qwen38 --distributed-executor-backend mp \
   --quantization gptq --dtype float16 --kv-cache-dtype fp8 --max-model-len 262144 --gpu-memory-utilization $GPU_UTIL \

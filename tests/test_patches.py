@@ -146,45 +146,22 @@ def test_fails_loudly_without_vllm(tmp_path, key):
 
 
 @needs_src
-def test_gdn_spec_sync_slices_pure_spec_branch(patched):
-    """patch_gdn_spec_sync: the pure MTP-decode branch slices instead of gathering with the host mask (each host-mask
-    gather of a device tensor is a blocking H2D copy = a full GPU queue drain); the mixed branch keeps its gathers."""
-    sandbox, _, _, _ = patched
-    rel = "vllm/v1/attention/backends/gdn_attn.py"
-    orig, new = (SRC / rel).read_text(), (sandbox / rel).read_text()
-    assert "B70_GDN_SPEC_NO_MASK_SYNC" in new
-    assert "B70_MTP_PARTIAL_FINAL_GROUP" in new  # applied on top of sergiiob/patch_mtp_boundary
-    pure = new[new.index("B70_GDN_SPEC_NO_MASK_SYNC"):]
-    pure = pure[:pure.index("            else:\n")]
-    assert "block_table_tensor[\n                        :num_spec_decodes, : self.num_spec + 1\n" in pure
-    assert "spec_sequence_masks_cpu" not in pure
-    assert "num_accepted_tokens = num_accepted_tokens[:num_spec_decodes]" in new
-    # the pure-spec state-index gather is gone (its text survives nowhere); the mixed step is patch_gdn_mixed_no_sync's
-    # (whose switch-off branch keeps the original mask gathers, so a whole-file gather count says nothing here)
-    pure_gather = re.compile(r"spec_sequence_masks_cpu, : self\.num_spec \+ 1\s*\]\s*non_spec_state_indices_tensor = None")
-    assert pure_gather.search(orig) and not pure_gather.search(new)
-    compile(new, rel, "exec")
-
-
-@needs_src
-def test_gdn_zero_draft_keeps_decode_rows_speculative(patched):
-    """patch_gdn_zero_draft: V2 marks every decode row (0..k drafts, width <= k+1) speculative, the builder no longer
-    falls back to the non-spec path for an all-zero-draft batch or a partial pure-spec group (ragged spec instead)."""
-    sandbox, _, _, _ = patched
-    hybrid = (sandbox / "vllm/v1/worker/gpu/model_states/mamba_hybrid.py").read_text()
-    gdn = (sandbox / "vllm/v1/attention/backends/gdn_attn.py").read_text()
-    assert "B70_GDN_ZERO_DRAFT" in hybrid and "B70_GDN_ZERO_DRAFT" in gdn
+def test_base_covers_dropped_gdn_patches():
+    """vLLM v0.32 ships what patch_gdn_spec_sync, patch_gdn_zero_draft and sergiiob/patch_mtp_boundary did on v0.31
+    (#56531, #55504 + the pure-spec slicing), so those patches were dropped. A base image without them must not ship."""
+    hybrid = (SRC / "vllm/v1/worker/gpu/model_states/mamba_hybrid.py").read_text()
+    gdn = (SRC / "vllm/v1/attention/backends/gdn_attn.py").read_text()
+    # zero-draft decode rows stay speculative, width bound k+1 (#56531 + #55504)
     assert "num_draft_tokens_per_req = np.zeros(input_batch.num_reqs, np.int32)" in hybrid
-    assert "<= self.vllm_config.num_speculative_tokens + 1" in hybrid  # #55504 width bound
+    assert "<= self.vllm_config.num_speculative_tokens + 1" in hybrid
     assert "is_decode, num_draft_tokens_per_req, -1" in hybrid
-    assert "def _b70_zero_draft_on()" in hybrid
-    # all-zero-draft fallback only with the switch off; partial groups stay speculative with the real token count
-    assert 'os.environ.get("B70_GDN_ZERO_DRAFT", "1") == "0"\n                and num_decode_draft_tokens_cpu' in gdn
-    assert "query_start_loc_cpu[num_spec_decodes].item()" in gdn
-    assert "actual_spec_token_size\n                        if _b70_ragged" in gdn
-    assert "\nimport os\n" in gdn
-    compile(hybrid, "mamba_hybrid.py", "exec")
-    compile(gdn, "gdn_attn.py", "exec")
+    # an all-zero-draft batch keeps the speculative path
+    assert "num_decode_draft_tokens_cpu[spec_sequence_masks_cpu].sum()" not in gdn
+    # pure-spec step: slices, no host-mask gathers; a partial final group stays speculative with its real token count
+    assert "block_table_tensor[\n                    :num_spec_decodes, : self.num_spec + 1\n" in gdn
+    assert "num_accepted_tokens = num_accepted_tokens[:num_spec_decodes]" in gdn
+    assert re.search(r"spec_token_size = min\(\s*num_spec_decodes \* \(self\.num_spec \+ 1\),\s*"
+                     r"query_start_loc_cpu\[-1\]\.item\(\),", gdn)
 
 
 @needs_src

@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """B70: no host-mask gathers in the GDN metadata builder's mixed step (spec decodes + prefills in one step).
 
-patch_gdn_spec_sync removed the two blocking gathers of the pure MTP-decode step. Steps that also carry a prefill
-(a new or long prompt while other requests decode: the normal state with agents and chunked prefill) still gather
-device tensors with host bool masks: block_table x2, query_lens x2, num_accepted_tokens and has_initial_state.
+vLLM v0.32 removed the two blocking gathers of the pure MTP-decode step (our old patch_gdn_spec_sync). Steps that
+also carry a prefill (a new or long prompt while other requests decode: the normal state with agents and chunked
+prefill) still gather device tensors with host bool masks: block_table x2, query_lens x2, num_accepted_tokens and has_initial_state.
 PyTorch turns each host mask into indices and copies them to the device with a blocking copy, which waits for all
 queued GPU work (measured on the B70: 305-309 ms per call with ~290 ms of GEMMs queued, vs 0.5 ms for this path).
 Every mixed step therefore loses the async-scheduling CPU/GPU overlap.
 
 Build the spec / non-spec row indices and both cumulative query lengths on the host (the query lens are already
 there), send them in ONE async pinned H2D copy and gather with index_select. Same values, order, dtype and contiguity.
-Backport of riceharvest/vllm hunt-gdn-meta-no-mask-sync (1a9e005) to the v0.31.0 text.
-
-Runs after b70/patch_gdn_spec_sync.py (anchors on its num_accepted_tokens text). Switch off with B70_GDN_MIXED_NO_SYNC=0.
+Backport of riceharvest/vllm hunt-gdn-meta-no-mask-sync (1a9e005) to the v0.32.0 text.
+Switch off with B70_GDN_MIXED_NO_SYNC=0.
 """
 from __future__ import annotations
 
@@ -151,15 +150,15 @@ MIXED_NEW = '''                non_spec_query_start_loc_cpu = torch.zeros(
                     )
 '''
 
-ACC_OLD = '''                else:
-                    num_accepted_tokens = num_accepted_tokens[spec_sequence_masks_cpu]
+ACC_OLD = '''            else:
+                num_accepted_tokens = num_accepted_tokens[spec_sequence_masks_cpu]
 '''
-ACC_NEW = '''                elif _b70_spec_rows is not None:
-                    num_accepted_tokens = num_accepted_tokens.index_select(
-                        0, _b70_spec_rows
-                    )
-                else:
-                    num_accepted_tokens = num_accepted_tokens[spec_sequence_masks_cpu]
+ACC_NEW = '''            elif _b70_spec_rows is not None:
+                num_accepted_tokens = num_accepted_tokens.index_select(
+                    0, _b70_spec_rows
+                )
+            else:
+                num_accepted_tokens = num_accepted_tokens[spec_sequence_masks_cpu]
 '''
 
 HIS_OLD = '''                has_initial_state = has_initial_state[~spec_sequence_masks_cpu]
@@ -176,8 +175,8 @@ HIS_NEW = '''                if _b70_non_spec_rows is not None:
 def patch_text(text: str) -> str:
     if MARKER in text:
         return text
-    if "B70_GDN_SPEC_NO_MASK_SYNC" not in text:
-        raise RuntimeError("gdn_attn.py lacks b70/patch_gdn_spec_sync; refusing")
+    if "num_accepted_tokens = num_accepted_tokens[:num_spec_decodes]" not in text:
+        raise RuntimeError("gdn_attn.py lacks the pure-spec slicing of vLLM v0.32 (#56531 era); refusing")
     for old, what in ((INIT_OLD, "spec mask init"), (MIXED_OLD, "mixed-step gathers"),
                       (ACC_OLD, "num_accepted_tokens gather"), (HIS_OLD, "has_initial_state gather")):
         if text.count(old) != 1:
