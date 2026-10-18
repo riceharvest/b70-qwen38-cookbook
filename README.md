@@ -215,14 +215,15 @@ expect roughly 1420-1510 generation and 2580-2770 total.
 Caveats: SergiioB's checkpoint (llmfan46's MTP-preserved GPTQ-Int4) also stores the linear-attention projections and the
 shared expert in int4, so it reads fewer bytes per step than palmfuture's (bf16 there, fp8 here); that favours his run.
 His was measured at a 165 W power cap, ours at the card's stock power limit (draw not logged). Different vLLM (his
-0.21 build, ours v0.31). MTP doesn't help here yet: each speculative token keeps its own fp32 GDN state slot, so MTP
+0.21 build, ours v0.31: the numbers above are image b70.3; the command now uses b70.7, which I haven't re-measured at
+c=64 yet). MTP doesn't help here yet: each speculative token keeps its own fp32 GDN state slot, so MTP
 at c=64 doesn't fit in 25 GB.
 
 ```bash
 docker run -d --name b70-many --device /dev/dri -v /dev/dri:/dev/dri:ro --shm-size 8g -p 8000:8000 -v ~/models:/models \
   -e B70_TARGET_LMHEAD_FP8=1 -e B70_LINEAR_FP8_FREE=1 \
   -e 'B70_LINEAR_FP8_RE=(self_attn\.(qkv_proj|o_proj)|linear_attn\.(in_proj_qkvz|in_proj_qkv|in_proj_z|out_proj)|shared_expert\.(gate_up_proj|down_proj))$' \
-  --entrypoint vllm ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.3 serve palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4 \
+  --entrypoint vllm ghcr.io/riceharvest/b70-vllm:v0.32.0-b70.7 serve palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4 \
   --served-model-name moe --port 8000 --distributed-executor-backend mp --quantization gptq --dtype float16 \
   --kv-cache-dtype fp8 --max-model-len 16384 --gpu-memory-utilization 0.82 --max-num-seqs 64 --max-num-batched-tokens 8192 \
   --language-model-only --cpu-offload-gb 4 --cpu-offload-params embed_tokens --no-enable-prefix-caching \
