@@ -6,7 +6,7 @@ quantizer, and the benchmark and quality scripts.
 
 Made by [@imdariotoo](https://x.com/imdariotoo). I post my B70 and local-model releases on X, so follow there for the next ones.
 
-What you get on one card, on the pinned `vllm/vllm-openai-xpu:v0.31.0` image:
+What you get on one card, on the pinned `vllm/vllm-openai-xpu:v0.32.0` image:
 
 - **262K context with vision**, a KV pool of ~320K tokens (fp8 KV), and MTP speculative decoding (k=4)
 - **an asymmetric GPTQ int4 quant** at half the KL of a regular symmetric GPTQ at the same size
@@ -26,7 +26,7 @@ Progress per release (v1 to v3, before/after tables): [RESULTS.md](RESULTS.md).
 
 ## Quick start (prebuilt image)
 
-One command, no build. The image is the pinned vLLM XPU v0.31.0 with this repo's patches and the B70 attention
+One command, no build. The image is the pinned vLLM XPU v0.32.0 with this repo's patches and the B70 attention
 kernels already in it:
 
 ```bash

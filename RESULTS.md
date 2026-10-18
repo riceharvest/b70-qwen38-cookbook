@@ -3,6 +3,31 @@
 What each release changed, measured on one Intel Arc Pro B70 (32 GB, stock 275 W), one request at a time, greedy,
 512-token answers. Details and methods are in the [README](README.md). Newest first.
 
+## image b70.7 (2026-10-18): rebased onto vLLM v0.32.0
+
+Image `ghcr.io/riceharvest/b70-vllm:v0.32.0-b70.7`: same patches and kernels on the `vllm/vllm-openai-xpu:v0.32.0`
+base. v0.32 ships vllm-xpu-kernels 0.1.15.4 and torch 2.14 like v0.31 (byte-identical kernel `.so` files), so the B70
+attention kernel and the MoE GEMV carry over unchanged. Three patches are gone because v0.32 does the same upstream:
+`patch_gdn_spec_sync`, `patch_gdn_zero_draft` (#56531 + #55504) and SergiioB's `patch_mtp_boundary`.
+`patch_gdn_mixed_no_sync` now also covers the GDN state-index re-gather of the 2nd and 3rd GDN KV-cache groups
+(`update_block_table`), which still synced 4 times per mixed prefill + MTP step on v0.31.
+
+Same box, same config as the b70.5 image test (Qwen3.8-27B GPTQ-Int4-asym (Orca), MTP k=4, greedy, 512-token answers,
+`GPU_UTIL=0.75`, 64K context), b70.6 numbers from the 2026-10-16 A/B:
+
+| | code | json | prose | thinking | 32K context |
+|---|---|---|---|---|---|
+| b70.6 tok/s (tok/step) | 113.6 (3.76) | 124.8 (4.13) | 69.2 (2.29) | 107.9 (3.58) | 36.8-39.0 ms/step |
+| b70.7 tok/s (tok/step) | 114.2 (3.76) | 127.4 (4.20) | 69.3 (2.29) | 110.0 (3.63) | 36.7 ms/step |
+
+- KV pool at the same `GPU_UTIL`: 126,552 -> 135,591 tokens (+7%); weights 13.57 -> 13.48 GiB.
+- 30-vs-14 canary: thinking off 5/6 (same as b70.5), thinking on 12/12; no `!!!!` output.
+- Qwen3.6-35B-A3B (palmfuture GPTQ-Int4, `--language-model-only`, 16K, `GPU_UTIL=0.80`): MTP4 decode 264.2 / 177.9
+  tok/s code / prose (b70.3 session: 243.7 / 164.4; different day, the box drifts 5-10%), prefill 4K / 15K 10.2K / 9.2K
+  tok/s (unchanged), KV pool 76,878 tokens, 0/16 corrupted outputs in 8-concurrent thinking-length chats, thinking on
+  12/12. Thinking off 4/6: both `sum(i*i for i in range(4))` phrasings answer 30, the known symmetric-int4 failure
+  ([SergiioB](https://github.com/SergiioB/intel-arc-pro-b70-inference-cookbook)); not compared against b70.6 yet.
+
 ## image b70.6 (2026-10-16): faster long-context decode, correctness fixes, client compatibility
 
 Image `ghcr.io/riceharvest/b70-vllm:v0.31.0-b70.6` (= `latest`), same kernels as b70.5. Interleaved A/B on the same
