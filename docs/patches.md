@@ -2,7 +2,7 @@
 
 The changes live as one commit each on two fork branches, pinned in `docker/fork.env`:
 
-- [riceharvest/vllm `b70/v0.32`](https://github.com/riceharvest/vllm/commits/b70/v0.32): vLLM v0.32.0 + 18 commits
+- [riceharvest/vllm `b70/v0.32`](https://github.com/riceharvest/vllm/commits/b70/v0.32): vLLM v0.32.0 + 20 commits
 - [riceharvest/vllm-xpu-kernels `b70/v0.1.15.4`](https://github.com/riceharvest/vllm-xpu-kernels/commits/b70/v0.1.15.4):
   the Python side of `patch_spec_packed` and `patch_moe_gemv` on the source of the 0.1.15.4 wheel
 
@@ -16,6 +16,7 @@ tests (`tests/test_overlay.py` fails if the image's files differ from the fork b
 |---|---|
 | `patch_embed_uva` | keeps `embed_tokens` in host RAM via UVA. Together with `--cpu-offload-params embed_tokens visual` (vision tower in host RAM too), that frees ~3.2 GiB of VRAM for KV cache. No measurable speed loss on a B70; vision still works. |
 | `patch_draft_vocab` | the MTP draft head only scores a 64K-token subset (`runtime/draft_vocab_64k.json`). Lossless: the target model verifies with the full vocab. |
+| `draft int4 MSE` | `B70_DRAFT_INT4_MSE=1` (opt-in): the int4 MTP draft (MTP layer + draft lm_head) picks a per-group clip factor (1.0 down to 0.70) with the lowest squared error instead of plain max/7 RTN. Same layout and kernel. Reconstruction error -17 to -27%; serving A/B: +1.5-2.5% tokens/step on code/json/think, -3% on prose, so off by default. |
 | `patch_asym_gptq` | loads asymmetric GPTQ (`sym: false`, uint4 + zero points) on XPU: adds the GPTQ v1 +1 back at load and stops the stock XPU path from transposing qzeros (a bug in stock). |
 | `patch_target_lmhead_fp8` | converts the 2.5 GB fp16 lm_head to per-row fp8 e4m3 at load (`fp8_gemm_w8a16`). Head read per step 4.3 -> 2.2 ms, +28K KV tokens, KL cost +0.0006. The int4 draft head is built from the fp16 weights first. |
 | `patch_spec_packed` | imports `runtime/spec_packed.py`, which routes MTP verify (q_len 5) to the packed per-row-mask decode kernel. Needs the B70 `.so`. |

@@ -288,3 +288,13 @@ def test_template_maps_openai_reasoning_effort(tmp_path):
         assert new.render(reasoning_effort=e) == env.from_string(stock).render(reasoning_effort=e)
     with pytest.raises(jinja2.TemplateError):
         new.render(reasoning_effort="bogus")
+
+
+@needs_src
+def test_draft_int4_mse_is_opt_in(overlaid):
+    """[B70] draft int4 MSE: both draft helpers carry the clip search, off unless B70_DRAFT_INT4_MSE=1 (same int4 layout)."""
+    for name in ("b70_draft_mtp_int4.py", "b70_draft_lmhead_int4.py"):
+        t = (overlaid / "vllm/model_executor/models" / name).read_text()
+        assert "environ.get('B70_DRAFT_INT4_MSE', '0') == '1'" in t, name
+        assert "for _b70_s in (1.0," in t and ".clamp(-8, 7).to(torch.int32)" in t
+        compile(t, name, "exec")
