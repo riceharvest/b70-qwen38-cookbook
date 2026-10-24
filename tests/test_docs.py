@@ -6,7 +6,18 @@ import subprocess
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-DOCS = sorted(p for p in REPO.rglob("*.md") if not {"build", ".git", "node_modules"} & set(p.relative_to(REPO).parts))
+def _markdown_files():
+    """Tracked markdown files only (a venv or a build tree inside the checkout has its own)."""
+    try:
+        out = subprocess.run(["git", "ls-files", "*.md"], cwd=REPO, capture_output=True, text=True, check=True).stdout.split()
+        if out:
+            return sorted(REPO / f for f in out)
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return sorted(p for p in REPO.rglob("*.md") if not {"build", ".git", "node_modules", ".venv", "venv"} & set(p.relative_to(REPO).parts))
+
+
+DOCS = _markdown_files()
 PATH_RE = re.compile(r"`((?:kernels|docker|runtime|quant|bench|docs|tests|licenses)/[\w./-]+)`")
 LINK_RE = re.compile(r"\]\(([^)#\s]+)(?:#[^)]*)?\)")
 
