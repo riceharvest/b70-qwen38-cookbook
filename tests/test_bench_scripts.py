@@ -4,6 +4,7 @@ import http.server
 import json
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -11,6 +12,7 @@ import threading
 import pytest
 
 BENCH = pathlib.Path(__file__).resolve().parent.parent / "bench"
+BENCH_RUN = BENCH
 COMPLETION_TOKENS, DRAFTS_PER_REQ, ACCEPTED = 40, 10, [9, 7, 5, 3]
 
 
@@ -73,9 +75,26 @@ def server():
     srv.shutdown()
 
 
+@pytest.fixture(scope="session")
+def bench_dir(tmp_path_factory):
+    """A copy of bench/ with a small synthetic corpus: the real bench/corpus.txt is gitignored (10 MB), so a fresh
+    checkout (CI) doesn't have it, and the tests must not depend on it."""
+    d = tmp_path_factory.mktemp("bench")
+    for f in BENCH.glob("*.py"):
+        shutil.copy2(f, d / f.name)
+    (d / "corpus.txt").write_text("".join(f"def f{i}(x):\n    return x * {i} + {i % 7}\n" for i in range(20000)))
+    return d
+
+
+@pytest.fixture(autouse=True)
+def _use_bench_dir(bench_dir):
+    global BENCH_RUN
+    BENCH_RUN = bench_dir
+
+
 def run(script, *args):
-    r = subprocess.run([sys.executable, str(BENCH / script), *map(str, args)], capture_output=True, text=True,
-                       timeout=120, cwd=BENCH, check=False)
+    r = subprocess.run([sys.executable, str(BENCH_RUN / script), *map(str, args)], capture_output=True, text=True,
+                       timeout=120, cwd=BENCH_RUN, check=False)
     assert r.returncode == 0, r.stderr
     return r.stdout
 
