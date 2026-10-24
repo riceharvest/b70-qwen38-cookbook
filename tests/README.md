@@ -9,6 +9,10 @@ the vLLM sources of the pinned base image:
 - content checks for single changes (GDN mixed-step no-sync, graph KV splits, greedy warmup, eager pad) on a copy of
   the image sources with the overlay applied, plus the runtime/ scripts
 
+`test_serve_entrypoint.py` runs `docker/b70-serve.sh` against stub `python` / `vllm` binaries and checks what it would
+launch: defaults, `B70_MTP_K` validation and the graph capture sizes that follow it, `FAST=0`, env overrides, the
+fp8-linear regex, and the JEV switch. It needs no image and no sources.
+
 ```bash
 tests/fetch_vllm_src.sh          # once per base image: copies the .py files of vllm + vllm_xpu_kernels out of it (~40 MB, no GPU)
 python -m pytest tests -q        # ~10 s; without the sources only the static checks run
