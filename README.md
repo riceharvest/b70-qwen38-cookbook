@@ -24,6 +24,14 @@ Want llama.cpp instead of vLLM? [b70-llama-builds](https://github.com/riceharves
 
 Progress per release (v1 to v3, before/after tables): [RESULTS.md](RESULTS.md).
 
+**Where to look**
+
+- Run it: [prebuilt image](#quick-start-prebuilt-image) or [from source](#quick-start-from-source)
+- Single-user speed, long context, prefill and quality: [Numbers](#numbers)
+- The 35B MoE: [Qwen3.6-35B-A3B](#qwen36-35b-a3b-moe-on-the-same-stack), its [byte budget](#how-fast-could-it-be-per-token-bytes-vs-608-gbs) and [64 concurrent users](#many-users-at-once-c64)
+- What changed in the vLLM stack: [docs/patches.md](docs/patches.md); what each release gained: [RESULTS.md](RESULTS.md)
+- Layout of this repo: [What's in here](#whats-in-here); dead ends: [Things I tried that didn't make it](#things-i-tried-that-didnt-make-it)
+
 ## Quick start (prebuilt image)
 
 One command, no build. The image is the pinned vLLM XPU v0.32.0 with our B70 vLLM changes and the B70 attention
