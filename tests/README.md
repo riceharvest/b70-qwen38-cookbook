@@ -19,6 +19,16 @@ a seeded and stable arithmetic question set), and `test_tput_metric.py` feeds `b
 server logs (it must flag runs where fewer than c requests ran at once). `test_docs.py` checks that links, paths and
 anchors in the markdown files resolve.
 
+`test_quant.py` checks the quantizer's numerics on small tensors: the MSE clip search, the packed layout the loaders read
+(qweight LSB-first along K, qzeros along N), GPTQ's error compensation against plain rounding, and the GPTQ v1 export with
+its independent check. `b70quant.py` runs a whole model at import, so the test lifts its functions out with `ast` and runs
+them unchanged. It needs PyTorch and is skipped without it:
+
+```bash
+python -m venv .venv && .venv/bin/pip install torch numpy pytest safetensors --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+.venv/bin/python -m pytest tests/test_quant.py -q
+```
+
 ```bash
 tests/fetch_vllm_src.sh          # once per base image: copies the .py files of vllm + vllm_xpu_kernels out of it (~40 MB, no GPU)
 python -m pytest tests -q        # ~10 s; without the sources only the static checks run
