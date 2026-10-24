@@ -1,3 +1,4 @@
+import shutil
 """docker/b70-serve.sh (the image entrypoint) on CPU: run it with stub `vllm` and `python` so we can check which
 arguments and environment it would hand to vLLM, without a GPU, a model download or the image."""
 import json
@@ -157,3 +158,98 @@ def test_jev_checkpoint_switches_setup(run):
     assert arg(argv, "--served-model-name") == "autotrust/JEV-27B-VL"
     assert "--enable-lora" in argv and "--enable-auto-tool-choice" not in argv
     assert "B70_LINEAR_FP8_RE" not in env
+
+
+DOCKER_STUB = f"""#!/usr/bin/env bash
+case "$1" in
+  rm|logs) exit 0 ;;
+  run)
+    {sys.executable} - "$@" <<'PY'
+import json, os, sys
+json.dump({{"argv": sys.argv[1:]}}, open(os.environ["B70_STUB_OUT"], "w"))
+PY
+    ;;
+esac
+"""
+
+
+@pytest.fixture
+def run_serve_sh(tmp_path):
+    """Run serve.sh in an isolated tree with a no-op docker/overlay.sh and stub docker + sha256sum."""
+    root = tmp_path / "repo"
+    (root / "docker").mkdir(parents=True)
+    shutil.copy2(REPO / "serve.sh", root / "serve.sh")
+    (root / "docker" / "overlay.sh").write_text("#!/usr/bin/env bash\nmkdir -p \"$1/site-packages\" && : > \"$1/removed.txt\"\n")
+    (root / "docker" / "overlay.sh").chmod(0o755)
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "docker").write_text(DOCKER_STUB)
+    (bindir / "docker").chmod(0o755)
+    (bindir / "sha256sum").write_text('#!/usr/bin/env bash\necho "${FAKE_SHA256:-000000000000}  $1"\n')
+    (bindir / "sha256sum").chmod(0o755)
+    (bindir / "curl").write_text("#!/usr/bin/env bash\nexit 0\n")
+    (bindir / "curl").chmod(0o755)
+    model = tmp_path / "model"
+    model.mkdir()
+
+    def _run(env=None):
+        out = tmp_path / "docker_out.json"
+        if out.exists():
+            out.unlink()
+        full_env = {
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "MODEL_DIR": str(model),
+            "SO_FILE": str(tmp_path / "missing_attn.so"),
+            "MOE_SO": str(tmp_path / "missing_moe.so"),
+            "B70_STUB_OUT": str(out),
+        }
+        if env:
+            full_env.update(env)
+        r = subprocess.run(["bash", str(root / "serve.sh")], env=full_env, capture_output=True, text=True, check=False)
+        return r, (json.loads(out.read_text()) if out.exists() else None)
+
+    return _run
+
+
+def test_serve_sh_requires_model_dir(run_serve_sh):
+    r, out = run_serve_sh({"MODEL_DIR": ""})
+    assert r.returncode != 0 and "MODEL_DIR" in r.stderr and out is None
+
+
+def test_serve_sh_missing_so_disables_spec_packed(run_serve_sh):
+    r, out = run_serve_sh()
+    assert r.returncode == 0, r.stderr
+    assert "not found -> stock attention kernels, packed MTP verify off" in r.stderr
+    assert "B70_SPEC_PACKED=0" in out["argv"]
+    assert "B70_MOE_GEMV=0" in out["argv"]
+
+
+def test_serve_sh_v1_kernel_hash_disables_spec_packed(run_serve_sh, tmp_path):
+    so = tmp_path / "attn.so"
+    so.write_text("v1")
+    r, out = run_serve_sh({"SO_FILE": str(so), "FAKE_SHA256": "aa241d52a601deadbeef"})
+    assert r.returncode == 0, r.stderr
+    assert "is the v1 kernel (no zero-sum guard) -> packed MTP verify off" in r.stderr
+    assert "B70_SPEC_PACKED=0" in out["argv"]
+
+
+def test_serve_sh_v2_kernel_and_moe_so_mount_and_enable(run_serve_sh, tmp_path):
+    so = tmp_path / "attn.so"
+    moe = tmp_path / "moe.so"
+    so.write_text("v2")
+    moe.write_text("moe")
+    r, out = run_serve_sh({"SO_FILE": str(so), "MOE_SO": str(moe), "FAKE_SHA256": "bbbbbbbbbbbb", "B70_GDN_STATE": "fp16"})
+    assert r.returncode == 0, r.stderr
+    argv = out["argv"]
+    assert "B70_SPEC_PACKED=1" in argv
+    assert "B70_MOE_GEMV=1" in argv
+    assert f"{moe}:/opt/b70moe/b70_moe_gemv.so:ro" in argv
+    assert "B70_GDN_ARGS=--mamba-ssm-cache-dtype float16" in argv
+
+
+@pytest.mark.parametrize("bad_gdn", ["fp8", "int8", " bogus"])
+def test_serve_sh_rejects_bad_gdn_state(run_serve_sh, bad_gdn):
+    r, out = run_serve_sh({"B70_GDN_STATE": bad_gdn})
+    assert r.returncode == 2 and "B70_GDN_STATE must be fp16, bf16 or fp32" in r.stderr and out is None
