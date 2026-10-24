@@ -159,7 +159,9 @@ per step. With it, 64 concurrent users get 42-45 ms per token (generation 1420-1
 with prompts) instead of 49.3 ms with only 61 of 64 running; decode quality stays at the fp32 noise floor and gsm8k is 98/100
 (fp32: 94/100)
 ([numbers, quality check, exact command](https://riceharvest.github.io/awesome-b70/results/vllm-64-users.html)). With
-`serve.sh`: `B70_GDN_STATE=fp16 ./serve.sh`; with the image: add `--mamba-ssm-cache-dtype float16` after the image name.
+`serve.sh`: `B70_GDN_STATE=fp16 ./serve.sh`; with the image: `-e B70_GDN_STATE=fp16` (or `--mamba-ssm-cache-dtype float16`).
+Keep the default `fp32` state for long-context (32K-262K) single-stream runs: the Xe2 chunk prefill kernel writes the state
+back between 64-token chunks, so an `fp16` state cache can overflow 65504 on long prompts ([vllm#62781](https://github.com/vllm-project/vllm/issues/62781)).
 Quality was checked without MTP; with MTP the per-draft state slots are fp16 too (not measured yet).
 
 **Decode GEMV check.** It matches CUTLASS to 3e-4 relative error per call (stress test: 900 routings incl. outlier

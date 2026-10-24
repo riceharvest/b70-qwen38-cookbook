@@ -3,7 +3,9 @@
 #   - a JEV repo (has adapter_vllm/ + serve_decide.py): System 1 /v1/decide + System 2, LoRA, bf16 lm_head
 #   - anything else (the Qwen3.8 int4 quants): chat with MTP k=4, fp8 lm_head, tool calls, reasoning parser
 # env: MODEL (HF repo id or a path, default darioooooo0o/Qwen3.8-27B-GPTQ-Int4-asym), PORT (8000), SERVED_NAME,
-#      GPU_UTIL, MAX_MODEL_LEN, FAST (1 = XPU graphs + MTP, 0 = eager), and any extra args after the image name.
+#      GPU_UTIL, MAX_MODEL_LEN, QUANTIZATION (auto-detected from config.json, default gptq; "none" omits --quantization),
+#      B70_GDN_STATE (fp32 default; fp16 for high-concurrency short/medium context), FAST (1 = XPU graphs + MTP, 0 = eager),
+#      and any extra args after the image name.
 set -euo pipefail
 MODEL=${MODEL:-darioooooo0o/Qwen3.8-27B-GPTQ-Int4-asym}; PORT=${PORT:-8000}
 if [ -d "$MODEL" ]; then DIR=$MODEL; else
@@ -14,12 +16,15 @@ MTP_K=${B70_MTP_K:-4}; case "$MTP_K" in [1-9]) ;; *) echo "B70_MTP_K must be 1-9
 CAPTURE=$(python -c "import sys; k=int(sys.argv[1]); print(','.join(map(str, sorted({1, 2, 4, 8} | {(k + 1) * n for n in range(1, 9)}))))" "$MTP_K")
 SPEC="{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP_K,\"draft_sample_method\":\"probabilistic\"}"
 GRAPHS="{\"cudagraph_capture_sizes\":[$CAPTURE]}"
+QUANT=${QUANTIZATION:-$(python -c 'import json,os,sys; p=os.path.join(sys.argv[1],"config.json"); c=json.load(open(p)) if os.path.isfile(p) else {}; q=(c.get("quantization_config") or (c.get("text_config") or {}).get("quantization_config") or {}).get("quant_method"); print(q or "gptq")' "$DIR")}
+QARGS=(); [ "$QUANT" != none ] && QARGS=(--quantization "$QUANT")
+GDN_ARGS=(); case "${B70_GDN_STATE:-}" in fp16) GDN_ARGS=(--mamba-ssm-cache-dtype float16) ;; bf16) GDN_ARGS=(--mamba-ssm-cache-dtype bfloat16) ;; ""|fp32) ;; *) echo "B70_GDN_STATE must be fp16, bf16 or fp32" >&2; exit 2 ;; esac
 # B70_PREFIX_UNIT=128: finer prefix-cache hits for multi-turn/tool loops (opt-in until validated with MTP)
 [ -n "${B70_PREFIX_UNIT:-}" ] && set -- --prefix-match-unit "$B70_PREFIX_UNIT" "$@"
 if [ "${FAST:-1}" = 1 ]; then FASTARGS=(--speculative-config "$SPEC" --compilation-config "$GRAPHS")
 else export VLLM_XPU_ENABLE_XPU_GRAPH=0; FASTARGS=(--enforce-eager); fi
-COMMON=(--port "$PORT" --distributed-executor-backend mp --quantization gptq --dtype float16 --kv-cache-dtype fp8
-        --max-num-seqs 8 --max-num-batched-tokens 8192 --cpu-offload-gb 4 --cpu-offload-params embed_tokens visual)
+COMMON=(--port "$PORT" --distributed-executor-backend mp "${QARGS[@]}" --dtype float16 --kv-cache-dtype fp8
+        --max-num-seqs 8 --max-num-batched-tokens 8192 --cpu-offload-gb 4 --cpu-offload-params embed_tokens visual "${GDN_ARGS[@]}")
 if [ -d "$DIR/adapter_vllm" ] && [ -f "$DIR/serve_decide.py" ]; then
   # LoRA buffers follow the lm_head dtype, so the fp8 head stays off. --max-num-seqs 8 is required by JEV.
   export B70_TARGET_LMHEAD_FP8=0 JEV_DECIDE_CALIBRATION="$DIR/calibration.json"

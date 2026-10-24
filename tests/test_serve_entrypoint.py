@@ -52,6 +52,8 @@ def run(tmp_path):
             (model / "adapter_vllm").mkdir(exist_ok=True)
             (model / "serve_decide.py").write_text("")
         out = tmp_path / "out.json"
+        if out.exists():
+            out.unlink()
         full_env = {"PATH": f"{bindir}:{os.environ['PATH']}", "HOME": str(tmp_path), "HF_HOME": str(tmp_path),
                     "MODEL": str(model), "B70_STUB_OUT": str(out)}
         full_env.update(env or {})
@@ -160,6 +162,37 @@ def test_jev_checkpoint_switches_setup(run):
     assert "B70_LINEAR_FP8_RE" not in env
 
 
+def test_quantization_autodetect_and_override(run, tmp_path):
+    model = tmp_path / "model"
+    # default without config.json -> gptq
+    _, out = run()
+    assert arg(out["argv"], "--quantization") == "gptq"
+    # AutoRound in top-level quantization_config -> auto-round
+    (model / "config.json").write_text(json.dumps({"quantization_config": {"quant_method": "auto-round"}}))
+    _, out = run()
+    assert arg(out["argv"], "--quantization") == "auto-round"
+    # nested under text_config -> awq
+    (model / "config.json").write_text(json.dumps({"text_config": {"quantization_config": {"quant_method": "awq"}}}))
+    _, out = run()
+    assert arg(out["argv"], "--quantization") == "awq"
+    # QUANTIZATION env overrides config.json; "none" omits --quantization
+    _, out = run({"QUANTIZATION": "compressed-tensors"})
+    assert arg(out["argv"], "--quantization") == "compressed-tensors"
+    _, out = run({"QUANTIZATION": "none"})
+    assert "--quantization" not in out["argv"]
+
+
+def test_b70_serve_gdn_state(run):
+    _, out = run()
+    assert "--mamba-ssm-cache-dtype" not in out["argv"]
+    _, out = run({"B70_GDN_STATE": "fp16"})
+    assert arg(out["argv"], "--mamba-ssm-cache-dtype") == "float16"
+    _, out = run({"B70_GDN_STATE": "bf16"})
+    assert arg(out["argv"], "--mamba-ssm-cache-dtype") == "bfloat16"
+    r, out = run({"B70_GDN_STATE": "fp8"})
+    assert r.returncode == 2 and "B70_GDN_STATE must be fp16, bf16 or fp32" in r.stderr and out is None
+
+
 DOCKER_STUB = f"""#!/usr/bin/env bash
 case "$1" in
   rm|logs) exit 0 ;;
@@ -253,3 +286,14 @@ def test_serve_sh_v2_kernel_and_moe_so_mount_and_enable(run_serve_sh, tmp_path):
 def test_serve_sh_rejects_bad_gdn_state(run_serve_sh, bad_gdn):
     r, out = run_serve_sh({"B70_GDN_STATE": bad_gdn})
     assert r.returncode == 2 and "B70_GDN_STATE must be fp16, bf16 or fp32" in r.stderr and out is None
+
+
+def test_serve_sh_quantization_autodetect(run_serve_sh, tmp_path):
+    model = tmp_path / "model"
+    _, out = run_serve_sh()
+    assert "B70_QUANT_ARGS=--quantization gptq" in out["argv"]
+    (model / "config.json").write_text(json.dumps({"quantization_config": {"quant_method": "auto-round"}}))
+    _, out = run_serve_sh()
+    assert "B70_QUANT_ARGS=--quantization auto-round" in out["argv"]
+    _, out = run_serve_sh({"QUANTIZATION": "none"})
+    assert "B70_QUANT_ARGS=" in out["argv"]

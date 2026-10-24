@@ -6,7 +6,7 @@
 # B70_PREFIX_UNIT=128: finer prefix-cache hits (--prefix-match-unit; must divide 1664). Multi-turn / tool-loop requests
 #   then re-prefill ~200 instead of ~1.7-3.3K tokens of history. Opt-in until validated (MTP + prefix cache class #53912).
 # B70_GDN_STATE=fp16: store the linear-attention (GDN) state in fp16 instead of the model config's fp32 (halves it; for many
-#   concurrent requests, see README "Many users at once")
+#   concurrent requests at short/medium context, see README "Many users at once" — keep default fp32 for long context, vllm#62781)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 "$HERE/docker/overlay.sh" "$HERE/build/overlay" >/dev/null   # the B70 fork changes (docker/fork.env), copied over the stock image below
@@ -20,6 +20,8 @@ KMOUNT=(); SPEC_PACKED=${B70_SPEC_PACKED:-1}
 # MoE models: int4 decode GEMV (kernels/b70_moe_gemv.so, release v3) + fp8 weight-only for linears a checkpoint ships in bf16
 MOE_SO=${MOE_SO:-$HERE/kernels/b70_moe_gemv.so}; MOE_GEMV=0; MOEMOUNT=()
 [ -f "$MOE_SO" ] && { MOEMOUNT=(-v "$MOE_SO:/opt/b70moe/b70_moe_gemv.so:ro"); MOE_GEMV=${B70_MOE_GEMV:-1}; }
+QUANT=${QUANTIZATION:-$(python3 -c 'import json,os,sys; p=os.path.join(sys.argv[1],"config.json"); c=json.load(open(p)) if os.path.isfile(p) else {}; q=(c.get("quantization_config") or (c.get("text_config") or {}).get("quantization_config") or {}).get("quant_method"); print(q or "gptq")' "$MODEL_DIR")}
+QUANT_ARGS=""; [ "$QUANT" != none ] && QUANT_ARGS="--quantization $QUANT"
 GDN_ARGS=""; case "${B70_GDN_STATE:-}" in fp16) GDN_ARGS="--mamba-ssm-cache-dtype float16" ;; bf16) GDN_ARGS="--mamba-ssm-cache-dtype bfloat16" ;; ""|fp32) ;; *) echo "B70_GDN_STATE must be fp16, bf16 or fp32" >&2; exit 2 ;; esac
 LINEAR_FP8_RE=${B70_LINEAR_FP8_RE-'(self_attn\.(qkv_proj|o_proj)|linear_attn\.(in_proj_qkvz|in_proj_qkv|in_proj_z|out_proj)|shared_expert\.(gate_up_proj|down_proj))$'}; [ "${B70_LINEAR_FP8:-1}" = 0 ] && LINEAR_FP8_RE=""
 if [ -f "$SO_FILE" ]; then
@@ -43,13 +45,13 @@ docker run -d --name "$NAME" -p "$PORT:$PORT" --device /dev/dri -v /dev/dri:/dev
   -e B70_MTP_BF16_DRAFT=1 -e B70_DRAFT_LMHEAD_INT4=1 -e B70_DRAFT_MTP_INT4=1 -e VLLM_XPU_ENABLE_XPU_GRAPH=1 \
   -e B70_DRAFT_VOCAB=/opt/b70/draft_vocab_64k.json -e B70_TARGET_LMHEAD_FP8=${B70_TARGET_LMHEAD_FP8:-1} -e B70_SPEC_PACKED=$SPEC_PACKED \
   -e B70_MOE_GEMV=$MOE_GEMV -e "B70_LINEAR_FP8_RE=$LINEAR_FP8_RE" \
-  -e PORT=$PORT -e GPU_UTIL=$GPU_UTIL -e "B70_GDN_ARGS=$GDN_ARGS" -e MTP_K=$MTP_K -e CAPTURE=$CAPTURE -e "PREFIX_ARGS=$PREFIX_ARGS" \
+  -e PORT=$PORT -e GPU_UTIL=$GPU_UTIL -e "B70_QUANT_ARGS=$QUANT_ARGS" -e "B70_GDN_ARGS=$GDN_ARGS" -e MTP_K=$MTP_K -e CAPTURE=$CAPTURE -e "PREFIX_ARGS=$PREFIX_ARGS" \
   --entrypoint bash $IMG -lc '
 set -e
 SP=/opt/venv/lib/python3.12/site-packages; cp -r /b70/overlay/site-packages/. $SP/; (cd $SP && xargs -r rm -- < /b70/overlay/removed.txt)
 CT=$(python /opt/b70/inline_system_template.py /model /tmp/chat_template_b70.jinja)  # Claude Code /v1/messages: keep the prefix cache
 exec vllm serve /model ${CT:+--chat-template $CT} --port $PORT --served-model-name qwen38 --distributed-executor-backend mp \
-  --quantization gptq --dtype float16 --kv-cache-dtype fp8 --max-model-len 262144 --gpu-memory-utilization $GPU_UTIL \
+  $B70_QUANT_ARGS --dtype float16 --kv-cache-dtype fp8 --max-model-len 262144 --gpu-memory-utilization $GPU_UTIL \
   --max-num-seqs 8 --max-num-batched-tokens 8192 \
   --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP_K,\"draft_sample_method\":\"probabilistic\"}" \
   --compilation-config "{\"cudagraph_capture_sizes\":[$CAPTURE]}" \
