@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Qwen3.8-27B on one Intel Arc Pro B70 (32 GB): asym GPTQ int4 + MTP k=4 + fp8 KV + 262K context + vision.
-# usage: MODEL_DIR=/path/to/downloaded/model ./serve.sh        (env: PORT, NAME, GPU_UTIL, SO_FILE, B70_SPEC_PACKED, B70_GDN_STATE, B70_MTP_K)
+# usage: MODEL_DIR=/path/to/downloaded/model ./serve.sh        (env: PORT, NAME, GPU_UTIL, SO_FILE, B70_SPEC_PACKED, B70_GDN_STATE, B70_MTP_K, TINYKV_PLUGIN)
 # B70_MTP_K: MTP draft tokens per step (default 4). Code/JSON/reasoning accept deep drafts often enough that 5 measured
 #   +0.4-0.6 tokens/step (prose: no gain) for one more draft pass (~0.7 ms); graph capture sizes follow k.
 # B70_PREFIX_UNIT=128: finer prefix-cache hits (--prefix-match-unit; must divide 1664). Multi-turn / tool-loop requests
@@ -37,9 +37,11 @@ fi
 PREFIX_ARGS=""; [ -n "${B70_PREFIX_UNIT:-}" ] && PREFIX_ARGS="--prefix-match-unit ${B70_PREFIX_UNIT}"
 MTP_K=${B70_MTP_K:-4}; case "$MTP_K" in [1-9]) ;; *) echo "B70_MTP_K must be 1-9" >&2; exit 2 ;; esac
 CAPTURE=$(python3 -c "import sys; k=int(sys.argv[1]); print(','.join(map(str, sorted({1, 2, 4, 8} | {(k + 1) * n for n in range(1, 9)}))))" "$MTP_K")
+# TinyKV checkpoints (Qwen3.6-35B-A3B-TinyKV-*): TINYKV_PLUGIN=<repo>/plugin installs its vLLM plugin in the container
+PLUGMOUNT=(); [ -n "${TINYKV_PLUGIN:-}" ] && PLUGMOUNT=(-v "$TINYKV_PLUGIN:/tkplugin:ro")
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" -p "$PORT:$PORT" --device /dev/dri -v /dev/dri:/dev/dri:ro --shm-size 8g \
-  -v "$MODEL_DIR:/model:ro" -v "$HERE/build/overlay:/b70/overlay:ro" -v "$HERE/runtime:/opt/b70:ro" "${KMOUNT[@]}" "${MOEMOUNT[@]}" \
+  -v "$MODEL_DIR:/model:ro" -v "$HERE/build/overlay:/b70/overlay:ro" -v "$HERE/runtime:/opt/b70:ro" "${KMOUNT[@]}" "${MOEMOUNT[@]}" "${PLUGMOUNT[@]}" \
   -e PYTORCH_ALLOC_CONF=expandable_segments:True -e VLLM_TARGET_DEVICE=xpu -e ZE_FLAT_DEVICE_HIERARCHY=COMPOSITE \
   -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK:-0} -e CCL_ATL_TRANSPORT=mpi -e CCL_PROCESS_LAUNCHER=none \
   -e B70_MTP_BF16_DRAFT=1 -e B70_DRAFT_LMHEAD_INT4=1 -e B70_DRAFT_MTP_INT4=1 -e VLLM_XPU_ENABLE_XPU_GRAPH=1 \
@@ -49,6 +51,7 @@ docker run -d --name "$NAME" -p "$PORT:$PORT" --device /dev/dri -v /dev/dri:/dev
   --entrypoint bash $IMG -lc '
 set -e
 SP=/opt/venv/lib/python3.12/site-packages; cp -r /b70/overlay/site-packages/. $SP/; (cd $SP && xargs -r rm -- < /b70/overlay/removed.txt)
+if [ -d /tkplugin ]; then cp -r /tkplugin /tmp/tkplugin && pip install -q --no-deps /tmp/tkplugin; fi
 CT=$(python /opt/b70/inline_system_template.py /model /tmp/chat_template_b70.jinja)  # Claude Code /v1/messages: keep the prefix cache
 exec vllm serve /model ${CT:+--chat-template $CT} --port $PORT --served-model-name qwen38 --distributed-executor-backend mp \
   $B70_QUANT_ARGS --dtype float16 --kv-cache-dtype fp8 --max-model-len 262144 --gpu-memory-utilization $GPU_UTIL \

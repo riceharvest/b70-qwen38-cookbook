@@ -245,6 +245,24 @@ docker exec b70-many vllm bench serve --backend vllm --base-url http://localhost
   --ignore-eos --num-prompts 128 --max-concurrency 64 --seed 0 --temperature 0 --percentile-metrics ttft,tpot,itl
 ```
 
+### Qwen3.6-35B-A3B-TinyKV: 2.5× smaller KV cache, full 262K context in 25 GB
+
+[Qwen3.6-35B-A3B-TinyKV-GPTQ-Int4](https://huggingface.co/darioooooo0o/Qwen3.6-35B-A3B-TinyKV-GPTQ-Int4) is the same
+palmfuture GPTQ-Int4 checkpoint with the 10 full-attention layers converted to a shared, compressed KV cache (cache heads
+of 128 instead of 256, three layers reading another layer's cache). It needs the attention kernels from release v4 (they add
+the head-128 variants; without them vLLM falls back to a slow PyTorch attention) and the model's vLLM plugin:
+
+```bash
+gh release download v4 -p 'libattn_kernels_xe_2.tinykv.so' -D kernels
+hf download darioooooo0o/Qwen3.6-35B-A3B-TinyKV-GPTQ-Int4 --local-dir ~/models/tinykv-gptq
+SO_FILE=kernels/libattn_kernels_xe_2.tinykv.so TINYKV_PLUGIN=~/models/tinykv-gptq/plugin \
+  MODEL_DIR=~/models/tinykv-gptq GPU_UTIL=0.82 ./serve.sh
+```
+
+Checked on one B70 (b70.7 image, `gpu_memory_utilization=0.82`, fp8 KV, text only, eager): the full 262K context fits with
+a **911,760-token KV cache** (3.5 full-length requests) vs 368,202 tokens (1.4) for the stock GPTQ-Int4; mean |Δ log p| vs
+PyTorch 0.105, as on CUDA. Not measured yet: decode speed, and MTP together with the plugin.
+
 ## What's in here
 
 | Path | |
