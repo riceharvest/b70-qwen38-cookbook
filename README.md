@@ -261,7 +261,16 @@ SO_FILE=kernels/libattn_kernels_xe_2.tinykv.so TINYKV_PLUGIN=~/models/tinykv-gpt
 
 Checked on one B70 (b70.7 image, `gpu_memory_utilization=0.82`, fp8 KV, text only, eager): the full 262K context fits with
 a **911,760-token KV cache** (3.5 full-length requests) vs 368,202 tokens (1.4) for the stock GPTQ-Int4; mean |Δ log p| vs
-PyTorch 0.105, as on CUDA. Not measured yet: decode speed, and MTP together with the plugin.
+PyTorch 0.105, as on CUDA. Full stack (`serve.sh`: graphs + MTP k=4, the same for both), stock vs TinyKV:
+
+| One B70, ≤ 25 GB | stock GPTQ-Int4 | TinyKV-GPTQ-Int4 |
+|---|---|---|
+| longest context that fits | ~211K | **262K** |
+| decode / prefill, 130K-token prompt | 186 / 3,461 tok/s | **233 / 5,486 tok/s** |
+| 64 users, 8K in / 512 out | 42 running, 387 out tok/s | **64 running, 449 out tok/s** |
+| localmaxxing verified (reasoning-v1 / code-v1) | | **237.0 / 208.7 tok/s** |
+
+MTP works with the plugin (draft acceptance 55-70% on the canonical prompts).
 
 ## What's in here
 
